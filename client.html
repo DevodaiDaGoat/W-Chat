@@ -1,7 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Discord-style Chat</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RealtimeConnect Meeting + Chat</title>
+    <link rel="stylesheet" href="style.css">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -19,6 +22,7 @@
             padding: 10px;
             display: flex;
             flex-direction: column;
+            border-left: 1px solid #202225;
         }
         #chatbox {
             flex-grow: 1;
@@ -26,10 +30,12 @@
             padding: 10px;
             background-color: #36393f;
             border-left: 1px solid #2f3136;
+            margin-bottom: 10px;
         }
         #messageInputContainer {
             padding: 10px;
             background-color: #40444b;
+            border-radius: 5px;
         }
         #messageInput {
             width: calc(100% - 70px);
@@ -37,6 +43,7 @@
             border: none;
             background-color: #40444b;
             color: #dcdfe4;
+            border-radius: 3px;
         }
         #messageInput:focus {
             outline: none;
@@ -48,22 +55,32 @@
             background-color: #7289da;
             color: white;
             cursor: pointer;
+            border-radius: 3px;
         }
-        #video-container {
+        #meeting-container {
             flex-grow: 1;
             display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            align-items: center;
+            flex-direction: column;
             background-color: #23272a;
         }
+        #video-grid {
+            flex-grow: 1;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+            padding: 15px;
+            align-items: center;
+            justify-items: center;
+        }
         .video-box {
-            margin: 10px;
-            border: 2px solid #202225;
+            width: 100%;
             max-width: 400px;
-            max-height: 300px;
+            aspect-ratio: 16/9;
             background-color: black;
             position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 2px solid #202225;
         }
         .video-box video {
             width: 100%;
@@ -75,53 +92,82 @@
             bottom: 5px;
             left: 5px;
             background-color: rgba(0, 0, 0, 0.5);
-            padding: 5px;
+            padding: 5px 10px;
             border-radius: 5px;
             color: white;
         }
         #controls-bar {
             background-color: #2f3136;
-            padding: 10px;
-            text-align: center;
+            padding: 15px;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            border-top: 1px solid #202225;
         }
-        #controls-bar button {
+        .control-btn {
             background-color: #7289da;
             border: none;
-            padding: 10px 20px;
+            padding: 12px 24px;
             color: white;
             cursor: pointer;
             border-radius: 5px;
-            margin: 0 5px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .control-btn:hover {
+            background-color: #5b6eae;
+        }
+        .end-call {
+            background-color: #f04747;
+        }
+        .end-call:hover {
+            background-color: #d84040;
         }
         .connected-status {
             color: #43b581;
+            margin-bottom: 10px;
         }
         .disconnected-status {
             color: #f04747;
+            margin-bottom: 10px;
         }
     </style>
 </head>
 <body>
+
+    <div id="meeting-container">
+        <div id="video-grid">
+            <!-- Video streams will be added here dynamically -->
+        </div>
+
+        <div id="controls-bar">
+            <button class="control-btn" id="micBtn" onclick="toggleMic()">
+                🎤 Mic On
+            </button>
+            <button class="control-btn" id="videoBtn" onclick="toggleVideo()">
+                📹 Video On
+            </button>
+            <button class="control-btn" id="screenShareBtn" onclick="toggleScreenShare()">
+                🖥️ Share Screen
+            </button>
+            <button class="control-btn end-call" onclick="endCall()">
+                ❌ Leave
+            </button>
+        </div>
+    </div>
 
     <div id="chat-sidebar">
         <h2>Chat</h2>
         <div id="chatbox"></div>
         <div id="messageInputContainer">
             <input type="text" id="usernameInput" placeholder="Enter username" />
-            <button onclick="connectTextChat()">Connect</button>
+            <button class="control-btn" onclick="connectTextChat()">Connect</button>
             <br><br>
             <input type="text" id="messageInput" placeholder="Type message..." disabled />
-            <button id="sendMessageBtn" disabled onclick="sendMessage()">Send</button>
+            <button id="sendMessageBtn" class="control-btn" disabled onclick="sendMessage()">Send</button>
         </div>
-    </div>
-
-    <div id="video-container">
-        <!-- Video streams will be added here -->
-    </div>
-
-    <div id="controls-bar">
-        <button id="videoBtn" onclick="toggleVideo()">Video On</button>
-        <button id="screenShareBtn" onclick="toggleScreenShare()">Screen Share</button>
     </div>
     
     <script>
@@ -130,18 +176,26 @@
         const messageInput = document.getElementById('messageInput');
         const usernameInput = document.getElementById('usernameInput');
         const sendMessageBtn = document.getElementById('sendMessageBtn');
-        const videoContainer = document.getElementById('video-container');
+        const videoGrid = document.getElementById('video-grid');
 
         let localStream;
         let peerConnections = {}; // Store multiple peer connections
         let isVideoEnabled = false;
+        let isAudioEnabled = true;
         let isScreenShareEnabled = false;
 
         function getWsUrl() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const hostname = window.location.hostname;
-            const port = window.location.port ? parseInt(window.location.port) + 1 : 8081;
-            return `${protocol}//${hostname}:${port}`;
+            // In production (render.com), we use the same hostname with wss://
+            // In development, we use localhost with the port+1
+            if (hostname === 'localhost') {
+                const port = window.location.port ? parseInt(window.location.port) + 1 : 3001;
+                return `${protocol}//${hostname}:${port}`;
+            } else {
+                // For production, use secure WebSocket with the same hostname
+                return `wss://${hostname}`;
+            }
         }
 
         async function connectTextChat() {
@@ -205,9 +259,10 @@
             // Display local stream
             const videoElement = document.createElement('div');
             videoElement.className = "video-box";
+            videoElement.id = "localVideo-container";
             videoElement.innerHTML = `<video autoplay muted></video><div class="video-controls">You</div>`;
             videoElement.querySelector('video').srcObject = stream;
-            videoContainer.appendChild(videoElement);
+            videoGrid.appendChild(videoElement);
 
             peerConnection.ontrack = (event) => {
                 const remoteStream = event.streams; // Assuming one stream per track
@@ -235,15 +290,32 @@
             peerConnections[answer.id] = peerConnection;
         }
 
+        function toggleMic() {
+            const micBtn = document.getElementById('micBtn');
+            if (localStream) {
+                const audioTrack = localStream.getAudioTracks()[0];
+                if (audioTrack) {
+                    isAudioEnabled = !isAudioEnabled;
+                    audioTrack.enabled = isAudioEnabled;
+                    micBtn.innerHTML = isAudioEnabled ? '🎤 Mic On' : '🎤 Mic Off';
+                    micBtn.style.backgroundColor = isAudioEnabled ? '#7289da' : '#f04747';
+                }
+            }
+        }
+
         async function toggleVideo() {
             const videoBtn = document.getElementById('videoBtn');
             if (isVideoEnabled) {
                 // Turn video off
                 if (localStream) {
-                    localStream.getTracks().forEach(track => track.stop());
+                    localStream.getVideoTracks().forEach(track => track.stop());
                 }
-                videoContainer.innerHTML = '';
-                videoBtn.textContent = 'Video On';
+                const localVideo = document.querySelector('#localVideo-container');
+                if (localVideo) {
+                    localVideo.remove();
+                }
+                videoBtn.innerHTML = '📹 Video On';
+                videoBtn.style.backgroundColor = '#7289da';
                 
                 // Close all peer connections
                 for (let id in peerConnections) {
@@ -253,11 +325,16 @@
                 
             } else {
                 try {
-                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    localStream = await navigator.mediaDevices.getUserMedia({ 
+                        video: true, 
+                        audio: isAudioEnabled 
+                    });
                     await createPeerConnection(localStream);
-                    videoBtn.textContent = 'Video Off';
+                    videoBtn.innerHTML = '📹 Video Off';
+                    videoBtn.style.backgroundColor = '#f04747';
                 } catch (error) {
                     console.error('Error accessing media devices.', error);
+                    alert('Could not access camera. Please ensure it is connected and permissions are granted.');
                 }
             }
             isVideoEnabled = !isVideoEnabled;
@@ -269,8 +346,12 @@
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
                 }
-                videoContainer.innerHTML = '';
-                screenShareBtn.textContent = 'Screen Share';
+                const localVideo = document.querySelector('#localVideo-container');
+                if (localVideo) {
+                    localVideo.remove();
+                }
+                screenShareBtn.innerHTML = '🖥️ Share Screen';
+                screenShareBtn.style.backgroundColor = '#7289da';
                 
                 // Close all peer connections
                 for (let id in peerConnections) {
@@ -280,14 +361,51 @@
 
             } else {
                 try {
-                    localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                    localStream = await navigator.mediaDevices.getDisplayMedia({ 
+                        video: true,
+                        audio: isAudioEnabled
+                    });
                     await createPeerConnection(localStream);
-                    screenShareBtn.textContent = 'Stop Sharing';
+                    screenShareBtn.innerHTML = '🖥️ Stop Sharing';
+                    screenShareBtn.style.backgroundColor = '#f04747';
+
+                    // Listen for the user stopping screen share through the browser UI
+                    localStream.getVideoTracks()[0].addEventListener('ended', () => {
+                        toggleScreenShare();
+                    });
                 } catch (error) {
                     console.error('Error accessing screen capture.', error);
+                    alert('Could not start screen sharing. Please ensure permissions are granted.');
                 }
             }
             isScreenShareEnabled = !isScreenShareEnabled;
+        }
+
+        function endCall() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            // Close all peer connections
+            for (let id in peerConnections) {
+                peerConnections[id].close();
+                delete peerConnections[id];
+            }
+            // Clear the video grid
+            const localVideo = document.querySelector('#localVideo-container');
+            if (localVideo) {
+                localVideo.remove();
+            }
+            // Reset buttons
+            document.getElementById('videoBtn').innerHTML = '📹 Video On';
+            document.getElementById('videoBtn').style.backgroundColor = '#7289da';
+            document.getElementById('micBtn').innerHTML = '🎤 Mic On';
+            document.getElementById('micBtn').style.backgroundColor = '#7289da';
+            document.getElementById('screenShareBtn').innerHTML = '🖥️ Share Screen';
+            document.getElementById('screenShareBtn').style.backgroundColor = '#7289da';
+            
+            isVideoEnabled = false;
+            isAudioEnabled = true;
+            isScreenShareEnabled = false;
         }
 
     </script>

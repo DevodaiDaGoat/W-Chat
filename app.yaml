@@ -1,0 +1,14 @@
+name: wchat
+services:
+- name: web
+  github:
+    branch: main
+    deploy_on_push: true
+  build_command: pip install -r requirements.txt
+  run_command: python server.py
+  environment_slug: python
+  envs:
+  - key: PORT
+    value: "8080"
+  - key: HOST
+    value: 0.0.0.0
