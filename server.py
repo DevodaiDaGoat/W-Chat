@@ -23,7 +23,12 @@ relay = MediaRelay()
 
 # Use aiohttp WebSocket for text chat so the app can run on a single port
 async def websocket_handler(request):
-    """Handles WebSocket connections for text chat using aiohttp."""
+    """Handles WebSocket connections for text chat using aiohttp.
+
+    This handler enforces unique usernames by appending a short suffix when
+    a collision is detected. It also ensures we only remove a stored
+    username if the same WebSocket instance is closing (avoids races).
+    """
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
@@ -32,7 +37,17 @@ async def websocket_handler(request):
         # First message should be the username
         msg = await ws.receive()
         if msg.type == web.WSMsgType.TEXT:
-            username = msg.data.strip()
+            requested = msg.data.strip()
+
+            # Ensure a unique username to prevent accidental overwrites
+            assigned = requested
+            if assigned in text_chat_clients:
+                suffix = str(uuid.uuid4())[:8]
+                assigned = f"{requested}_{suffix}"
+                # Inform the client of the assigned username so the UI can update
+                await ws.send_str(f"ASSIGNED_USERNAME:{assigned}")
+
+            username = assigned
             text_chat_clients[username] = ws
             logging.info(f'Text chat connection opened for {username}')
             await broadcast_text_message(f"User {username} has joined the chat.")
@@ -43,6 +58,11 @@ async def websocket_handler(request):
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 message = msg.data
+
+                # Ignore server-to-client assignment messages if somehow echoed back
+                if message.startswith('ASSIGNED_USERNAME:'):
+                    continue
+
                 if message.startswith('/w '):
                     parts = message.split(' ', 2)
                     if len(parts) >= 3:
@@ -51,12 +71,17 @@ async def websocket_handler(request):
                     else:
                         await send_direct_text_message('server', username, "Invalid private message format.")
                 else:
+                    # Broadcast the user message to all connected clients
                     await broadcast_text_message(f"{username}: {message}")
             elif msg.type == web.WSMsgType.ERROR:
                 logging.error('WebSocket connection closed with exception %s', ws.exception())
 
+    except Exception:
+        logging.exception('Exception in websocket handler for %s', username)
+
     finally:
-        if username and username in text_chat_clients:
+        # Only remove the entry if it still points to this WebSocket
+        if username and username in text_chat_clients and text_chat_clients[username] is ws:
             del text_chat_clients[username]
             logging.info(f'Text chat connection closed for {username}')
             await broadcast_text_message(f"User {username} has left the chat.")
