@@ -7,6 +7,12 @@ import os
 
 from aiohttp import web
 import aiohttp_cors
+import sqlite3
+import bcrypt
+import aiosqlite
+from aiohttp_session import setup as session_setup, get_session
+from aiohttp_session.cookie_storage import EncryptedCookieStorage
+from cryptography.fernet import Fernet
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay, MediaPlayer
 
@@ -19,6 +25,7 @@ text_chat_clients = {}
 # --- WebRTC specific variables ---
 webrtc_peers = {}
 relay = MediaRelay()
+published_tracks = []  # list of tracks published by peers (Relay subscriptions stored as original tracks)
 
 
 # Use aiohttp WebSocket for text chat so the app can run on a single port
@@ -105,9 +112,71 @@ async def send_direct_text_message(sender, recipient, message):
 
 # --- aiohttp and WebRTC Handlers ---
 async def index(request):
-    """Serves the client.html file."""
+    """Serves the client.html file only for authenticated users."""
+    session = await get_session(request)
+    if not session or 'username' not in session:
+        raise web.HTTPFound('/login')
+
     with open("client.html") as f:
         return web.Response(text=f.read(), content_type="text/html")
+
+
+async def login_page(request):
+    with open('login.html') as f:
+        return web.Response(text=f.read(), content_type='text/html')
+
+
+async def register_page(request):
+    with open('register.html') as f:
+        return web.Response(text=f.read(), content_type='text/html')
+
+
+async def do_register(request):
+    data = await request.post()
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    if not username or not password:
+        return web.Response(text='Missing username or password', status=400)
+
+    async with aiosqlite.connect('users.db') as db:
+        await db.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash BLOB)')
+        try:
+            pw_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            await db.execute('INSERT INTO users(username, password_hash) VALUES(?, ?)', (username, pw_hash))
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            return web.Response(text='Username already exists', status=409)
+
+    return web.HTTPFound('/login')
+
+
+async def do_login(request):
+    data = await request.post()
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    if not username or not password:
+        return web.Response(text='Missing username or password', status=400)
+
+    async with aiosqlite.connect('users.db') as db:
+        await db.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash BLOB)')
+        async with db.execute('SELECT password_hash FROM users WHERE username = ?', (username,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return web.Response(text='Invalid username or password', status=401)
+            stored_hash = row[0]
+            if not bcrypt.checkpw(password.encode('utf-8'), stored_hash):
+                return web.Response(text='Invalid username or password', status=401)
+
+    session = await get_session(request)
+    session['username'] = username
+    return web.HTTPFound('/')
+
+
+async def do_logout(request):
+    session = await get_session(request)
+    if session and 'username' in session:
+        del session['username']
+    return web.HTTPFound('/login')
 
 async def offer(request):
     """
@@ -147,8 +216,23 @@ async def offer(request):
         @peer_connection.on("track")
         def on_track(track):
             logging.info("Track %s received from peer %s", track.kind, peer_id)
-            if track.kind == "video":
-                peer_connection.addTrack(track)
+            # Keep track of published tracks for newly joining peers to subscribe to
+            published_tracks.append(track)
+            # Try to relay this track to existing peers by adding a relay subscription
+            for other_id, other_pc in list(webrtc_peers.items()):
+                if other_id == peer_id:
+                    continue
+                try:
+                    other_pc.addTrack(relay.subscribe(track))
+                except Exception:
+                    logging.exception("Failed to add relayed track to peer %s", other_id)
+
+        # Add any already-published tracks to this new peer so they can receive others' streams
+        try:
+            for t in published_tracks:
+                peer_connection.addTrack(relay.subscribe(t))
+        except Exception:
+            logging.exception("Error adding existing published tracks to new peer %s", peer_id)
 
         await peer_connection.setRemoteDescription(offer_description)
         await peer_connection.setLocalDescription(await peer_connection.createAnswer())
@@ -176,6 +260,15 @@ async def start_server():
     
     # Start the HTTP server to serve client.html
     app = web.Application()
+
+    # Setup encrypted cookie session storage
+    secret_key = os.environ.get('SESSION_KEY')
+    if not secret_key:
+        # Generate a key if none provided (volatile across restarts)
+        secret_key = Fernet.generate_key()
+    else:
+        secret_key = secret_key.encode('utf-8')
+    session_setup(app, EncryptedCookieStorage(secret_key))
     
     # Configure CORS before adding routes
     cors = aiohttp_cors.setup(app, defaults={
@@ -190,7 +283,14 @@ async def start_server():
     # Add and configure routes with CORS
     resource = cors.add(app.router.add_resource("/"))
     cors.add(resource.add_route("GET", index))
-    
+
+    # Authentication pages and endpoints
+    app.router.add_get('/login', login_page)
+    app.router.add_get('/register', register_page)
+    app.router.add_post('/login', do_login)
+    app.router.add_post('/register', do_register)
+    app.router.add_get('/logout', do_logout)
+
     resource = cors.add(app.router.add_resource("/offer"))
     cors.add(resource.add_route("POST", offer))
     
