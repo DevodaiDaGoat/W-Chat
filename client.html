@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Discord-style Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #36393f; /* Discord background color */
+            color: #dcdfe4;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #chat-sidebar {
+            width: 250px;
+            background-color: #2f3136;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+        #chatbox {
+            flex-grow: 1;
+            overflow-y: scroll;
+            padding: 10px;
+            background-color: #36393f;
+            border-left: 1px solid #2f3136;
+        }
+        #messageInputContainer {
+            padding: 10px;
+            background-color: #40444b;
+        }
+        #messageInput {
+            width: calc(100% - 70px);
+            padding: 10px;
+            border: none;
+            background-color: #40444b;
+            color: #dcdfe4;
+        }
+        #messageInput:focus {
+            outline: none;
+        }
+        #sendMessageBtn {
+            width: 60px;
+            padding: 10px;
+            border: none;
+            background-color: #7289da;
+            color: white;
+            cursor: pointer;
+        }
+        #video-container {
+            flex-grow: 1;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            background-color: #23272a;
+        }
+        .video-box {
+            margin: 10px;
+            border: 2px solid #202225;
+            max-width: 400px;
+            max-height: 300px;
+            background-color: black;
+            position: relative;
+        }
+        .video-box video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .video-controls {
+            position: absolute;
+            bottom: 5px;
+            left: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px;
+            border-radius: 5px;
+            color: white;
+        }
+        #controls-bar {
+            background-color: #2f3136;
+            padding: 10px;
+            text-align: center;
+        }
+        #controls-bar button {
+            background-color: #7289da;
+            border: none;
+            padding: 10px 20px;
+            color: white;
+            cursor: pointer;
+            border-radius: 5px;
+            margin: 0 5px;
+        }
+        .connected-status {
+            color: #43b581;
+        }
+        .disconnected-status {
+            color: #f04747;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="chat-sidebar">
+        <h2>Chat</h2>
+        <div id="chatbox"></div>
+        <div id="messageInputContainer">
+            <input type="text" id="usernameInput" placeholder="Enter username" />
+            <button onclick="connectTextChat()">Connect</button>
+            <br><br>
+            <input type="text" id="messageInput" placeholder="Type message..." disabled />
+            <button id="sendMessageBtn" disabled onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <div id="video-container">
+        <!-- Video streams will be added here -->
+    </div>
+
+    <div id="controls-bar">
+        <button id="videoBtn" onclick="toggleVideo()">Video On</button>
+        <button id="screenShareBtn" onclick="toggleScreenShare()">Screen Share</button>
+    </div>
+    
+    <script>
+        let textWs;
+        const chatbox = document.getElementById('chatbox');
+        const messageInput = document.getElementById('messageInput');
+        const usernameInput = document.getElementById('usernameInput');
+        const sendMessageBtn = document.getElementById('sendMessageBtn');
+        const videoContainer = document.getElementById('video-container');
+
+        let localStream;
+        let peerConnections = {}; // Store multiple peer connections
+        let isVideoEnabled = false;
+        let isScreenShareEnabled = false;
+
+        function getWsUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const hostname = window.location.hostname;
+            const port = window.location.port ? parseInt(window.location.port) + 1 : 8081;
+            return `${protocol}//${hostname}:${port}`;
+        }
+
+        async function connectTextChat() {
+            const username = usernameInput.value.trim();
+            if (!username) {
+                alert("Please enter a username.");
+                return;
+            }
+            
+            textWs = new WebSocket(getWsUrl());
+
+            textWs.onopen = function(event) {
+                chatbox.innerHTML += '<b class="connected-status">Connected to text chat.</b><br>';
+                textWs.send(username);
+                messageInput.disabled = false;
+                sendMessageBtn.disabled = false;
+            };
+
+            textWs.onmessage = function(event) {
+                chatbox.innerHTML += event.data + '<br>';
+                chatbox.scrollTop = chatbox.scrollHeight;
+            };
+
+            textWs.onclose = function(event) {
+                chatbox.innerHTML += '<b class="disconnected-status">Disconnected from text chat.</b><br>';
+                messageInput.disabled = true;
+                sendMessageBtn.disabled = true;
+            };
+
+            textWs.onerror = function(event) {
+                chatbox.innerHTML += '<b class="disconnected-status">An error occurred.</b><br>';
+            };
+        }
+
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (message && textWs && textWs.readyState === WebSocket.OPEN) {
+                textWs.send(message);
+                messageInput.value = '';
+            }
+        }
+        
+        messageInput.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+
+        // =========================================================
+        // WebRTC functions for Video/Audio/Screen Share
+        // =========================================================
+
+        async function createPeerConnection(stream) {
+            const peerConnection = new RTCPeerConnection();
+            
+            stream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, stream);
+            });
+
+            // Display local stream
+            const videoElement = document.createElement('div');
+            videoElement.className = "video-box";
+            videoElement.innerHTML = `<video autoplay muted></video><div class="video-controls">You</div>`;
+            videoElement.querySelector('video').srcObject = stream;
+            videoContainer.appendChild(videoElement);
+
+            peerConnection.ontrack = (event) => {
+                const remoteStream = event.streams; // Assuming one stream per track
+                const remoteVideoBox = document.createElement('div');
+                remoteVideoBox.className = "video-box";
+                remoteVideoBox.innerHTML = `<video autoplay></video><div class="video-controls">Remote User</div>`;
+                remoteVideoBox.querySelector('video').srcObject = remoteStream;
+                videoContainer.appendChild(remoteVideoBox);
+            };
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            const response = await fetch('/offer', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    sdp: peerConnection.localDescription.sdp,
+                    type: peerConnection.localDescription.type
+                })
+            });
+            const answer = await response.json();
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+
+            peerConnections[answer.id] = peerConnection;
+        }
+
+        async function toggleVideo() {
+            const videoBtn = document.getElementById('videoBtn');
+            if (isVideoEnabled) {
+                // Turn video off
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                }
+                videoContainer.innerHTML = '';
+                videoBtn.textContent = 'Video On';
+                
+                // Close all peer connections
+                for (let id in peerConnections) {
+                    peerConnections[id].close();
+                    delete peerConnections[id];
+                }
+                
+            } else {
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    await createPeerConnection(localStream);
+                    videoBtn.textContent = 'Video Off';
+                } catch (error) {
+                    console.error('Error accessing media devices.', error);
+                }
+            }
+            isVideoEnabled = !isVideoEnabled;
+        }
+
+        async function toggleScreenShare() {
+            const screenShareBtn = document.getElementById('screenShareBtn');
+            if (isScreenShareEnabled) {
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                }
+                videoContainer.innerHTML = '';
+                screenShareBtn.textContent = 'Screen Share';
+                
+                // Close all peer connections
+                for (let id in peerConnections) {
+                    peerConnections[id].close();
+                    delete peerConnections[id];
+                }
+
+            } else {
+                try {
+                    localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                    await createPeerConnection(localStream);
+                    screenShareBtn.textContent = 'Stop Sharing';
+                } catch (error) {
+                    console.error('Error accessing screen capture.', error);
+                }
+            }
+            isScreenShareEnabled = !isScreenShareEnabled;
+        }
+
+    </script>
+</body>
+</html>
