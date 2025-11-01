@@ -100,28 +100,46 @@ async def offer(request):
     # Store peer ID in request for easier cleanup
     request.transport_peer_id = peer_id
 
-    @peer_connection.on("iceconnectionstatechange")
-    async def on_iceconnectionstatechange():
-        logging.info(
-            "ICE connection state is %s for peer %s",
-            peer_connection.iceConnectionState,
-            peer_id,
-        )
-        if peer_connection.iceConnectionState == "closed":
+    try:
+        @peer_connection.on("iceconnectionstatechange")
+        async def on_iceconnectionstatechange():
+            logging.info(
+                "ICE connection state is %s for peer %s",
+                peer_connection.iceConnectionState,
+                peer_id,
+            )
+            if peer_connection.iceConnectionState == "failed":
+                logging.warning(f"ICE connection failed for peer {peer_id}")
+                if peer_id in webrtc_peers:
+                    await peer_connection.close()
+                    del webrtc_peers[peer_id]
+            elif peer_connection.iceConnectionState == "closed":
+                if peer_id in webrtc_peers:
+                    await peer_connection.close()
+                    del webrtc_peers[peer_id]
+                    logging.info(f"Cleaned up connection for peer {peer_id}")
+
+        @peer_connection.on("track")
+        def on_track(track):
+            logging.info("Track %s received from peer %s", track.kind, peer_id)
+            if track.kind == "video":
+                peer_connection.addTrack(track)
+
+        await peer_connection.setRemoteDescription(offer_description)
+        await peer_connection.setLocalDescription(await peer_connection.createAnswer())
+
+        return web.json_response({
+            "sdp": peer_connection.localDescription.sdp,
+            "type": peer_connection.localDescription.type,
+            "id": peer_id
+        })
+
+    except Exception as e:
+        logging.error(f"Error in WebRTC offer handler: {str(e)}")
+        if peer_id in webrtc_peers:
             await peer_connection.close()
-            webrtc_peers.pop(peer_id, None)
-
-    @peer_connection.on("track")
-    def on_track(track):
-        logging.info("Track %s received from peer %s", track.kind, peer_id)
-        # Add logic here to broadcast track to all other peers if necessary
-    
-    await peer_connection.setRemoteDescription(offer_description)
-    await peer_connection.setLocalDescription(await peer_connection.createAnswer())
-
-    return web.json_response(
-        {"sdp": peer_connection.localDescription.sdp, "type": peer_connection.localDescription.type, "id": peer_id}
-    )
+            del webrtc_peers[peer_id]
+        return web.json_response({"error": str(e)}, status=500)
 
 async def start_server():
     """Starts both the HTTP server for the client page and the WebSocket server."""
@@ -133,27 +151,30 @@ async def start_server():
     
     # Start the HTTP server to serve client.html
     app = web.Application()
-    app.router.add_get("/", index)
-    app.router.add_post("/offer", offer)
-    # WebSocket endpoint for text chat
-    app.router.add_get("/ws", websocket_handler)
-
-    # Add health check endpoint for cloud platforms
-    async def healthcheck(request):
-        return web.Response(text="OK", status=200)
-    app.router.add_get("/health", healthcheck)
-
-    # Configure CORS for production using aiohttp_cors
+    
+    # Configure CORS before adding routes
     cors = aiohttp_cors.setup(app, defaults={
         "*": aiohttp_cors.ResourceOptions(
             allow_credentials=True,
             expose_headers="*",
             allow_headers="*",
+            allow_methods=["GET", "POST", "OPTIONS"]
         )
     })
-    # Enable CORS on all routes
-    for route in list(app.router.routes()):
-        cors.add(route)
+
+    # Add and configure routes with CORS
+    resource = cors.add(app.router.add_resource("/"))
+    cors.add(resource.add_route("GET", index))
+    
+    resource = cors.add(app.router.add_resource("/offer"))
+    cors.add(resource.add_route("POST", offer))
+    
+    # WebSocket endpoint for text chat (WebSocket doesn't need CORS)
+    app.router.add_get("/ws", websocket_handler)
+
+    # Add health check endpoint with CORS
+    resource = cors.add(app.router.add_resource("/health"))
+    cors.add(resource.add_route("GET", lambda request: web.Response(text="OK", status=200)))
     
     runner = web.AppRunner(app)
     await runner.setup()
