@@ -1,0 +1,115 @@
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #1a1a1a; /* Dark background like Zoom/Teams */
+    color: white;
+    font-family: Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+
+#meeting-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+#video-grid {
+    flex-grow: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+video {
+    width: 400px;
+    height: 300px;
+    object-fit: cover;
+    background-color: black;
+    border-radius: 8px;
+    border: 2px solid #444;
+}
+
+#localVideo {
+    border: 2px solid #007bff; /* Highlight local video */
+}
+
+#controls-bar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #2c2c2c;
+    padding: 15px 0;
+    box-shadow: 0 -2px 5px rgba(0,0,0,0.2);
+}
+
+.control-btn {
+    background-color: #444;
+    padding: 10px 20px;
+    margin: 0 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.control-btn:hover {
+    background-color: #555;
+}
+
+.end-call {
+    background-color: #dc3545; /* Red for leave button */
+}
+
+.end-call:hover {
+    background-color: #c82333;
+}
+.control-icon {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+}
+.control-btn span {
+    margin-left: 8px;
+    vertical-align: middle;
+}
+.control-btn.active {
+    background-color: #007bff; /* Blue when active */
+}
+.control-btn.active:hover {
+    background-color: #0069d9;
+}
+.control-btn.disabled {
+    background-color: #666;
+    cursor: not-allowed;
+}
+.control-btn.disabled:hover {
+    background-color: #666;
+}
+.control-btn:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0,123,255,0.5);
+}
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    video {
+        width: 100%;
+        height: auto;
+    }
+}
+@media (max-width: 480px) {
+    #controls-bar {
+        flex-direction: column;
+    }
+    .control-btn {
+        margin: 5px 0;
+        width: 80%;
+    }
+}
+
+/* End of style.css */

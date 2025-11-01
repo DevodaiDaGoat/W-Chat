@@ -111,21 +111,39 @@ async def offer(request):
 async def start_server():
     """Starts both the HTTP server for the client page and the WebSocket server."""
     
-    port = int(os.environ.get("PORT", 8080))
-    host = "0.0.0.0"
-
+    # Use PORT from environment or default to 3000 (common cloud platform default)
+    port = int(os.environ.get("PORT", 3000))
+    # Use HOST from environment or default to localhost for development
+    host = os.environ.get("HOST", "0.0.0.0")
+    
+    # Configure CORS for production
+    cors = web.middleware.cors_middleware(
+        allow_all=True  # In production, replace with specific origins
+    )
+    
     # Start the HTTP server to serve client.html
-    app = web.Application()
+    app = web.Application(middlewares=[cors])
     app.router.add_get("/", index)
     app.router.add_post("/offer", offer)
+    
+    # Add health check endpoint for cloud platforms
+    async def healthcheck(request):
+        return web.Response(text="OK", status=200)
+    app.router.add_get("/health", healthcheck)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
     logging.info(f"HTTP server started on http://{host}:{port}")
     
-    websocket_server = await websockets.serve(text_chat_handler, host, port + 1)
-    logging.info(f"WebSocket server for text chat started on ws://{host}:{port + 1}")
+    ws_port = port + 1
+    websocket_server = await websockets.serve(text_chat_handler, host, ws_port)
+    logging.info(f"WebSocket server for text chat started on ws://{host}:{ws_port}")
+    
+    logging.info(f"Server is ready. Access locally at:")
+    logging.info(f"- HTTP: http://localhost:{port}")
+    logging.info(f"- WebSocket: ws://localhost:{ws_port}")
     
     await asyncio.Event().wait()
 
