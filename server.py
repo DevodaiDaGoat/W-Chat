@@ -319,8 +319,24 @@ async def start_server():
         logging.warning('No valid SESSION_KEY or SESSION_PASSPHRASE provided; generating a volatile session key. Set SESSION_KEY or SESSION_PASSPHRASE in env to make sessions persistent.')
         secret_key = Fernet.generate_key()
 
-    session_setup(app, EncryptedCookieStorage(secret_key))
-    
+    try:
+        session_setup(app, EncryptedCookieStorage(secret_key))
+    except Exception as e:
+        logging.exception('Failed to initialize EncryptedCookieStorage with provided key: %s', e)
+        # Try regenerating a fresh Fernet key and retry (volatile)
+        try:
+            fallback_key = Fernet.generate_key()
+            session_setup(app, EncryptedCookieStorage(fallback_key))
+            logging.warning('Using a newly-generated volatile Fernet key for sessions (will not persist across restarts).')
+        except Exception:
+            logging.exception('Failed to initialize EncryptedCookieStorage even with a generated key. Falling back to SimpleCookieStorage (no encryption).')
+            try:
+                from aiohttp_session import SimpleCookieStorage
+                session_setup(app, SimpleCookieStorage())
+            except Exception:
+                logging.exception('Failed to initialize any session storage. Exiting.')
+                raise
+
     # Configure CORS before adding routes
     cors = aiohttp_cors.setup(app, defaults={
         "*": aiohttp_cors.ResourceOptions(
