@@ -178,6 +178,28 @@
         const sendMessageBtn = document.getElementById('sendMessageBtn');
         const videoGrid = document.getElementById('video-grid');
 
+        function appendMessage(type, message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+            
+            switch(type) {
+                case 'system':
+                    messageDiv.innerHTML = `<span class="system-text">${message}</span>`;
+                    messageDiv.style.color = '#7289da';
+                    break;
+                case 'dm':
+                    messageDiv.innerHTML = `<span class="dm-text">${message}</span>`;
+                    messageDiv.style.color = '#43b581';
+                    break;
+                case 'chat':
+                    messageDiv.innerHTML = `<span class="chat-text">${message}</span>`;
+                    break;
+            }
+            
+            chatbox.appendChild(messageDiv);
+            chatbox.scrollTop = chatbox.scrollHeight;
+        }
+
         let localStream;
         let peerConnections = {}; // Store multiple peer connections
         let isVideoEnabled = false;
@@ -207,21 +229,32 @@
             textWs = new WebSocket(getWsUrl());
 
             textWs.onopen = function(event) {
-                chatbox.innerHTML += '<b class="connected-status">Connected to text chat.</b><br>';
+                appendMessage('system', 'Connected to text chat.');
                 textWs.send(username);
                 messageInput.disabled = false;
                 sendMessageBtn.disabled = false;
+                usernameInput.disabled = true;
             };
 
             textWs.onmessage = function(event) {
-                chatbox.innerHTML += event.data + '<br>';
-                chatbox.scrollTop = chatbox.scrollHeight;
+                const data = event.data;
+                if (data.startsWith('[DM')) {
+                    // Handle DM separately with different styling
+                    appendMessage('dm', data);
+                } else if (data.startsWith('User') && (data.includes('joined') || data.includes('left'))) {
+                    // Handle system messages
+                    appendMessage('system', data);
+                } else {
+                    // Regular chat messages
+                    appendMessage('chat', data);
+                }
             };
 
             textWs.onclose = function(event) {
-                chatbox.innerHTML += '<b class="disconnected-status">Disconnected from text chat.</b><br>';
+                appendMessage('system', 'Disconnected from text chat.');
                 messageInput.disabled = true;
                 sendMessageBtn.disabled = true;
+                usernameInput.disabled = false;
             };
 
             textWs.onerror = function(event) {
@@ -248,45 +281,98 @@
         // WebRTC functions for Video/Audio/Screen Share
         // =========================================================
 
-        async function createPeerConnection(stream) {
-            const peerConnection = new RTCPeerConnection();
+        async function createPeerConnection(stream, isScreenShare = false) {
+            const peerConnection = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            });
             
+            // Display local stream
+            let localVideoContainer = document.querySelector('#localVideo-container');
+            if (!localVideoContainer) {
+                localVideoContainer = document.createElement('div');
+                localVideoContainer.className = "video-box";
+                localVideoContainer.id = "localVideo-container";
+                localVideoContainer.innerHTML = `<video autoplay muted playsinline></video><div class="video-controls">${isScreenShare ? 'Your Screen' : 'You'}</div>`;
+                videoGrid.appendChild(localVideoContainer);
+            }
+            localVideoContainer.querySelector('video').srcObject = stream;
+
+            // Add tracks to peer connection
             stream.getTracks().forEach(track => {
                 peerConnection.addTrack(track, stream);
             });
 
-            // Display local stream
-            const videoElement = document.createElement('div');
-            videoElement.className = "video-box";
-            videoElement.id = "localVideo-container";
-            videoElement.innerHTML = `<video autoplay muted></video><div class="video-controls">You</div>`;
-            videoElement.querySelector('video').srcObject = stream;
-            videoGrid.appendChild(videoElement);
-
             peerConnection.ontrack = (event) => {
                 const remoteStream = event.streams[0];
-                const remoteVideoBox = document.createElement('div');
-                remoteVideoBox.className = "video-box";
-                remoteVideoBox.innerHTML = `<video autoplay></video><div class="video-controls">Remote User</div>`;
-                remoteVideoBox.querySelector('video').srcObject = remoteStream;
-                videoGrid.appendChild(remoteVideoBox);
+                let remoteVideoContainer = document.querySelector('#remoteVideo-container');
+                
+                if (!remoteVideoContainer) {
+                    remoteVideoContainer = document.createElement('div');
+                    remoteVideoContainer.className = "video-box";
+                    remoteVideoContainer.id = "remoteVideo-container";
+                    remoteVideoContainer.innerHTML = `<video autoplay playsinline></video><div class="video-controls">Remote ${isScreenShare ? 'Screen' : 'User'}</div>`;
+                    videoGrid.appendChild(remoteVideoContainer);
+                }
+                
+                remoteVideoContainer.querySelector('video').srcObject = remoteStream;
             };
 
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
+            // Add ICE connection state change handler
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("ICE Connection State:", peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    console.log("ICE Connection failed - retrying");
+                    peerConnection.restartIce();
+                }
+            };
 
-            const response = await fetch('/offer', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    sdp: peerConnection.localDescription.sdp,
-                    type: peerConnection.localDescription.type
-                })
-            });
-            const answer = await response.json();
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            // Add ICE candidate handler
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    console.log("New ICE candidate:", event.candidate);
+                }
+            };
 
-            peerConnections[answer.id] = peerConnection;
+            try {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                const response = await fetch('/offer', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        sdp: peerConnection.localDescription.sdp,
+                        type: peerConnection.localDescription.type
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const answer = await response.json();
+                if (answer.error) {
+                    throw new Error(answer.error);
+                }
+
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                peerConnections[answer.id] = peerConnection;
+                
+                console.log("WebRTC connection established successfully");
+            } catch (error) {
+                console.error("Error establishing WebRTC connection:", error);
+                alert("Failed to establish connection. Please try again.");
+                
+                // Clean up on error
+                peerConnection.close();
+                const localVideo = document.querySelector('#localVideo-container');
+                if (localVideo) {
+                    videoGrid.removeChild(localVideo);
+                }
+                throw error;
+            }
         }
 
         function toggleMic() {
@@ -345,39 +431,58 @@
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
                 }
+                
+                // Close existing peer connections
+                for (let id in peerConnections) {
+                    if (peerConnections[id]) {
+                        peerConnections[id].close();
+                        delete peerConnections[id];
+                    }
+                }
+
+                // Remove video elements
                 const localVideo = document.querySelector('#localVideo-container');
                 if (localVideo) {
-                    localVideo.remove();
+                    videoGrid.removeChild(localVideo);
                 }
+                const remoteVideo = document.querySelector('#remoteVideo-container');
+                if (remoteVideo) {
+                    videoGrid.removeChild(remoteVideo);
+                }
+
                 screenShareBtn.innerHTML = '🖥️ Share Screen';
                 screenShareBtn.style.backgroundColor = '#7289da';
-                
-                // Close all peer connections
-                for (let id in peerConnections) {
-                    peerConnections[id].close();
-                    delete peerConnections[id];
-                }
+                isScreenShareEnabled = false;
 
             } else {
                 try {
+                    // Request screen sharing
                     localStream = await navigator.mediaDevices.getDisplayMedia({ 
-                        video: true,
-                        audio: isAudioEnabled
+                        video: {
+                            cursor: "always"
+                        },
+                        audio: true
                     });
-                    await createPeerConnection(localStream);
+
+                    // Create new peer connection for screen sharing
+                    await createPeerConnection(localStream, true);
+                    
                     screenShareBtn.innerHTML = '🖥️ Stop Sharing';
                     screenShareBtn.style.backgroundColor = '#f04747';
+                    isScreenShareEnabled = true;
 
-                    // Listen for the user stopping screen share through the browser UI
+                    // Handle the user stopping screen share through browser UI
                     localStream.getVideoTracks()[0].addEventListener('ended', () => {
-                        toggleScreenShare();
+                        if (isScreenShareEnabled) {
+                            toggleScreenShare();
+                        }
                     });
                 } catch (error) {
-                    console.error('Error accessing screen capture.', error);
+                    console.error('Error accessing screen capture:', error);
                     alert('Could not start screen sharing. Please ensure permissions are granted.');
+                    isScreenShareEnabled = false;
                 }
             }
-            isScreenShareEnabled = !isScreenShareEnabled;
         }
 
         function endCall() {
