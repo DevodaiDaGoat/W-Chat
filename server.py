@@ -262,12 +262,63 @@ async def start_server():
     app = web.Application()
 
     # Setup encrypted cookie session storage
-    secret_key = os.environ.get('SESSION_KEY')
-    if not secret_key:
-        # Generate a key if none provided (volatile across restarts)
+    # Accept either a valid Fernet key in SESSION_KEY (base64 urlsafe 32 bytes),
+    # or derive one from SESSION_PASSPHRASE (convenient) using PBKDF2.
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
+    import base64
+
+    session_key_env = os.environ.get('SESSION_KEY')
+    passphrase = os.environ.get('SESSION_PASSPHRASE')
+
+    def _use_key(key_bytes: bytes):
+        # validate by attempting to construct a Fernet instance
+        try:
+            Fernet(key_bytes)
+            return key_bytes
+        except Exception:
+            return None
+
+    secret_key = None
+    if session_key_env:
+        # try direct use (user likely provided Fernet.generate_key())
+        try:
+            candidate = session_key_env.encode('utf-8')
+            if _use_key(candidate):
+                secret_key = candidate
+            else:
+                # maybe user provided the base64 string without bytes; try raw base64 decode
+                try:
+                    decoded = base64.urlsafe_b64decode(session_key_env)
+                    # re-encode into the exact form Fernet expects
+                    encoded = base64.urlsafe_b64encode(decoded)
+                    if _use_key(encoded):
+                        secret_key = encoded
+                except Exception:
+                    secret_key = None
+        except Exception:
+            secret_key = None
+
+    if secret_key is None and passphrase:
+        # Derive a Fernet key from passphrase using PBKDF2 (stable across restarts if same passphrase)
+        salt = os.environ.get('SESSION_SALT', 'static_salt_for_demo')
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt.encode('utf-8'),
+            iterations=390000,
+            backend=default_backend(),
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode('utf-8')))
+        if _use_key(key):
+            secret_key = key
+
+    if secret_key is None:
+        # Last resort: generate a volatile key (sessions will not survive restarts)
+        logging.warning('No valid SESSION_KEY or SESSION_PASSPHRASE provided; generating a volatile session key. Set SESSION_KEY or SESSION_PASSPHRASE in env to make sessions persistent.')
         secret_key = Fernet.generate_key()
-    else:
-        secret_key = secret_key.encode('utf-8')
+
     session_setup(app, EncryptedCookieStorage(secret_key))
     
     # Configure CORS before adding routes
