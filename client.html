@@ -187,14 +187,13 @@
         function getWsUrl() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const hostname = window.location.hostname;
-            // In production (render.com), we use the same hostname with wss://
-            // In development, we use localhost with the port+1
+            // In development, use localhost with the port+1
             if (hostname === 'localhost') {
                 const port = window.location.port ? parseInt(window.location.port) + 1 : 3001;
-                return `${protocol}//${hostname}:${port}`;
+                return `${protocol}//${hostname}:${port}/ws`;
             } else {
-                // For production, use secure WebSocket with the same hostname
-                return `wss://${hostname}`;
+                // For production, use secure WebSocket with the same hostname and /ws path
+                return `wss://${hostname}/ws`;
             }
         }
 
@@ -265,12 +264,12 @@
             videoGrid.appendChild(videoElement);
 
             peerConnection.ontrack = (event) => {
-                const remoteStream = event.streams; // Assuming one stream per track
+                const remoteStream = event.streams[0];
                 const remoteVideoBox = document.createElement('div');
                 remoteVideoBox.className = "video-box";
                 remoteVideoBox.innerHTML = `<video autoplay></video><div class="video-controls">Remote User</div>`;
                 remoteVideoBox.querySelector('video').srcObject = remoteStream;
-                videoContainer.appendChild(remoteVideoBox);
+                videoGrid.appendChild(remoteVideoBox);
             };
 
             const offer = await peerConnection.createOffer();

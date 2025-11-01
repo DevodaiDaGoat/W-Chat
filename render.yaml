@@ -2,7 +2,11 @@ services:
   - type: web
     name: wchat
     env: python
-    buildCommand: pip install -r requirements.txt
+    # Use a debug build command so Render shows the repository root contents.
+    # This lists files and prints requirements.txt before attempting to install.
+    # If requirements.txt is not present in the build container, these commands
+    # will make that visible in the build logs.
+    buildCommand: bash -lc "ls -la; echo '--- show requirements.txt (start) ---'; cat requirements.txt || true; echo '--- show requirements.txt (end) ---'; pip install -r requirements.txt"
     startCommand: python server.py
     envVars:
       - key: PORT

@@ -3,9 +3,10 @@ import json
 import logging
 import uuid
 import os
-import websockets
+# websockets package not used for production HTTP WebSocket handling (using aiohttp instead)
 
 from aiohttp import web
+import aiohttp_cors
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay, MediaPlayer
 
@@ -20,48 +21,62 @@ webrtc_peers = {}
 relay = MediaRelay()
 
 
-async def text_chat_handler(websocket):
-    """Handles WebSocket connections for text chat."""
+# Use aiohttp WebSocket for text chat so the app can run on a single port
+async def websocket_handler(request):
+    """Handles WebSocket connections for text chat using aiohttp."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    username = None
     try:
-        username = await websocket.recv()
-        text_chat_clients[username] = websocket
-        logging.info(f'Text chat connection opened for {username}')
-        await broadcast_text_message(f"User {username} has joined the chat.")
+        # First message should be the username
+        msg = await ws.receive()
+        if msg.type == web.WSMsgType.TEXT:
+            username = msg.data.strip()
+            text_chat_clients[username] = ws
+            logging.info(f'Text chat connection opened for {username}')
+            await broadcast_text_message(f"User {username} has joined the chat.")
+        else:
+            await ws.close()
+            return ws
 
-        async for message in websocket:
-            if message.startswith('/w '):
-                parts = message.split(' ', 2)
-                if len(parts) >= 3:
-                    _, recipient, dm_content = parts
-                    await send_direct_text_message(username, recipient, dm_content)
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                message = msg.data
+                if message.startswith('/w '):
+                    parts = message.split(' ', 2)
+                    if len(parts) >= 3:
+                        _, recipient, dm_content = parts
+                        await send_direct_text_message(username, recipient, dm_content)
+                    else:
+                        await send_direct_text_message('server', username, "Invalid private message format.")
                 else:
-                    await send_direct_text_message('server', username, "Invalid private message format.")
-            else:
-                await broadcast_text_message(f"{username}: {message}")
+                    await broadcast_text_message(f"{username}: {message}")
+            elif msg.type == web.WSMsgType.ERROR:
+                logging.error('WebSocket connection closed with exception %s', ws.exception())
 
-    except websockets.exceptions.ConnectionClosed:
-        logging.info(f'Text chat connection closed for {username}')
-        if username in text_chat_clients:
-            del text_chat_clients[username]
-            await broadcast_text_message(f"User {username} has left the chat.")
     finally:
-        if username in text_chat_clients:
+        if username and username in text_chat_clients:
             del text_chat_clients[username]
+            logging.info(f'Text chat connection closed for {username}')
+            await broadcast_text_message(f"User {username} has left the chat.")
+
+    return ws
 
 
 async def broadcast_text_message(message):
-    """Sends a message to all connected text clients."""
+    """Sends a message to all connected text clients (aiohttp WebSocket)."""
     if text_chat_clients:
-        await asyncio.gather(*[client.send(message) for client in text_chat_clients.values()])
+        await asyncio.gather(*[client.send_str(message) for client in text_chat_clients.values()])
 
 async def send_direct_text_message(sender, recipient, message):
-    """Sends a private message to a specific user."""
+    """Sends a private message to a specific user (aiohttp WebSocket)."""
     if recipient in text_chat_clients:
-        await text_chat_clients[recipient].send(f"[DM from {sender}]: {message}")
-        if sender != 'server':
-            await text_chat_clients[sender].send(f"[DM to {recipient}]: {message}")
+        await text_chat_clients[recipient].send_str(f"[DM from {sender}]: {message}")
+        if sender != 'server' and sender in text_chat_clients:
+            await text_chat_clients[sender].send_str(f"[DM to {recipient}]: {message}")
     elif sender != 'server' and sender in text_chat_clients:
-        await text_chat_clients[sender].send(f"User {recipient} is not online.")
+        await text_chat_clients[sender].send_str(f"User {recipient} is not online.")
 
 # --- aiohttp and WebRTC Handlers ---
 async def index(request):
@@ -116,20 +131,29 @@ async def start_server():
     # Use HOST from environment or default to localhost for development
     host = os.environ.get("HOST", "0.0.0.0")
     
-    # Configure CORS for production
-    cors = web.middleware.cors_middleware(
-        allow_all=True  # In production, replace with specific origins
-    )
-    
     # Start the HTTP server to serve client.html
-    app = web.Application(middlewares=[cors])
+    app = web.Application()
     app.router.add_get("/", index)
     app.router.add_post("/offer", offer)
-    
+    # WebSocket endpoint for text chat
+    app.router.add_get("/ws", websocket_handler)
+
     # Add health check endpoint for cloud platforms
     async def healthcheck(request):
         return web.Response(text="OK", status=200)
     app.router.add_get("/health", healthcheck)
+
+    # Configure CORS for production using aiohttp_cors
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        )
+    })
+    # Enable CORS on all routes
+    for route in list(app.router.routes()):
+        cors.add(route)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -137,13 +161,9 @@ async def start_server():
     await site.start()
     logging.info(f"HTTP server started on http://{host}:{port}")
     
-    ws_port = port + 1
-    websocket_server = await websockets.serve(text_chat_handler, host, ws_port)
-    logging.info(f"WebSocket server for text chat started on ws://{host}:{ws_port}")
-    
     logging.info(f"Server is ready. Access locally at:")
     logging.info(f"- HTTP: http://localhost:{port}")
-    logging.info(f"- WebSocket: ws://localhost:{ws_port}")
+    logging.info(f"- WebSocket: ws://localhost:{port}/ws")
     
     await asyncio.Event().wait()
 
