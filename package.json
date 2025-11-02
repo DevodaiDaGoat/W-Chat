@@ -1,0 +1,33 @@
+{
+  "name": "chat",
+  "version": "1.0.0",
+  "description": "Real-time chat application with video calls",
+  "main": "script.js",
+  "scripts": {
+    "build:css": "./node_modules/.bin/tailwindcss -i ./style.css -o ./dist/style.css",
+    "watch:css": "./node_modules/.bin/tailwindcss -i ./style.css -o ./dist/style.css --watch",
+    "start": "python server.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DevodaiDaGoat/W-Chat.git"
+  },
+  "keywords": [
+    "chat",
+    "video",
+    "webrtc",
+    "websocket"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/DevodaiDaGoat/W-Chat/issues"
+  },
+  "homepage": "https://github.com/DevodaiDaGoat/W-Chat#readme",
+  "devDependencies": {
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.31",
+    "tailwindcss": "^3.3.5"
+  }
+}

@@ -4,8 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RealtimeConnect Meeting + Chat</title>
-    <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="index.css">
+    <link rel="stylesheet" href="dist/style.css">
     <style>
         :root {
             --sidebar-width: 320px;
@@ -187,35 +186,56 @@
             border-top: 1px solid #202225;
         }
         .control-btn {
-            background-color: hsl(var(--primary));
-            color: hsl(var(--primary-foreground));
-            border: none;
-            padding: 12px 24px;
-            cursor: pointer;
-            border-radius: var(--radius);
-            font-weight: 500;
+            position: relative;
             display: flex;
             align-items: center;
+            justify-content: center;
+            min-width: 36px;
+            height: 36px;
+            padding: 0 16px;
+            margin: 0 8px;
+            background-color: var(--background-surface-high);
+            border: none;
+            border-radius: 50px;
+            color: var(--text-default);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.1s ease;
             gap: 8px;
-            transition: opacity 0.2s;
+            white-space: nowrap;
         }
-        
+
         .control-btn:hover {
-            opacity: 0.9;
+            background-color: var(--background-surface-higher);
         }
-        
+
+        .control-btn:active {
+            background-color: var(--background-surface-highest);
+        }
+
+        .control-btn .control-icon {
+            width: 20px;
+            height: 20px;
+            color: currentColor;
+        }
+
         .control-btn.muted, .control-btn.camera-off {
-            background-color: hsl(var(--destructive));
-            color: hsl(var(--destructive-foreground));
+            background-color: var(--background-feedback-critical);
+            color: var(--text-default);
         }
-        .control-btn:hover {
-            background-color: #5b6eae;
-        }
+
         .end-call {
-            background-color: #f04747;
+            background-color: hsl(359, 82.6%, 59.4%);
+            color: white;
         }
+
         .end-call:hover {
-            background-color: #d84040;
+            background-color: hsl(359, 56.7%, 48%);
+        }
+
+        .end-call:active {
+            background-color: hsl(359, 56.7%, 44%);
         }
         .connected-status {
             color: #43b581;
@@ -236,16 +256,28 @@
 
         <div id="controls-bar">
             <button class="control-btn" id="micBtn" onclick="toggleMic()">
-                🎤 Mic On
+                <svg class="control-icon" viewBox="0 0 24 24" width="24" height="24">
+                    <path fill="currentColor" d="M12 2C11.173 2 10.5 2.673 10.5 3.5V11.5C10.5 12.327 11.173 13 12 13C12.827 13 13.5 12.327 13.5 11.5V3.5C13.5 2.673 12.827 2 12 2ZM7 5.5C7 5.224 6.776 5 6.5 5C6.224 5 6 5.224 6 5.5V11.5C6 14.536 8.464 17 11.5 17H12.5C15.536 17 18 14.536 18 11.5V5.5C18 5.224 17.776 5 17.5 5C17.224 5 17 5.224 17 5.5V11.5C17 13.985 14.985 16 12.5 16H11.5C9.015 16 7 13.985 7 11.5V5.5ZM3 11.5C3 11.224 2.776 11 2.5 11C2.224 11 2 11.224 2 11.5C2 16.187 5.681 20 10.25 20.315V22.5C10.25 22.776 10.474 23 10.75 23H13.25C13.526 23 13.75 22.776 13.75 22.5V20.315C18.319 20 22 16.187 22 11.5C22 11.224 21.776 11 21.5 11C21.224 11 21 11.224 21 11.5C21 15.636 17.636 19 13.5 19H10.5C6.364 19 3 15.636 3 11.5Z"/>
+                </svg>
+                <span>Mic On</span>
             </button>
             <button class="control-btn" id="videoBtn" onclick="toggleVideo()">
-                📹 Video On
+                <svg class="control-icon" viewBox="0 0 24 24" width="24" height="24">
+                    <path fill="currentColor" d="M21.526 8.149C21.231 7.966 20.862 7.951 20.553 8.105L18 9.382V7C18 5.897 17.103 5 16 5H4C2.897 5 2 5.897 2 7V17C2 18.104 2.897 19 4 19H16C17.103 19 18 18.104 18 17V14.618L20.553 15.894C20.694 15.965 20.847 16 21 16C21.183 16 21.365 15.949 21.526 15.851C21.82 15.668 22 15.347 22 15V9C22 8.653 21.82 8.332 21.526 8.149Z"/>
+                </svg>
+                <span>Video On</span>
             </button>
             <button class="control-btn" id="screenShareBtn" onclick="toggleScreenShare()">
-                🖥️ Share Screen
+                <svg class="control-icon" viewBox="0 0 24 24" width="24" height="24">
+                    <path fill="currentColor" d="M2 4.5C2 3.397 2.897 2.5 4 2.5H20C21.103 2.5 22 3.397 22 4.5V15.5C22 16.604 21.103 17.5 20 17.5H13V19.5H17V21.5H7V19.5H11V17.5H4C2.897 17.5 2 16.604 2 15.5V4.5ZM13.2 14.3L15.5 12L13.2 9.7L14.3 8.6L17.7 12L14.3 15.4L13.2 14.3ZM10.8 14.3L9.7 15.4L6.3 12L9.7 8.6L10.8 9.7L8.5 12L10.8 14.3Z"/>
+                </svg>
+                <span>Share Screen</span>
             </button>
             <button class="control-btn end-call" onclick="leaveMeeting()">
-                ❌ Leave
+                <svg class="control-icon" viewBox="0 0 24 24" width="24" height="24">
+                    <path fill="currentColor" d="M21.1169 3.00006C21.9469 3.00006 22.6169 3.67006 22.6169 4.50006V19.5001C22.6169 20.3301 21.9469 21.0001 21.1169 21.0001H2.11694C1.28694 21.0001 0.616943 20.3301 0.616943 19.5001V4.50006C0.616943 3.67006 1.28694 3.00006 2.11694 3.00006H21.1169ZM14.1169 7.50006C14.1169 6.67006 13.4469 6.00006 12.6169 6.00006H4.61694C3.78694 6.00006 3.11694 6.67006 3.11694 7.50006V16.5001C3.11694 17.3301 3.78694 18.0001 4.61694 18.0001H12.6169C13.4469 18.0001 14.1169 17.3301 14.1169 16.5001V7.50006ZM19.6169 10.5001L16.6169 12.0001L19.6169 13.5001V10.5001Z"/>
+                </svg>
+                <span>Leave</span>
             </button>
         </div>
     </div>

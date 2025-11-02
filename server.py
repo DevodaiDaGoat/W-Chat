@@ -247,6 +247,23 @@ async def cleanup_peer(peer_id):
         del webrtc_peers[peer_id]
         logging.info(f"Cleaned up peer {username} from {meeting}")
 
+# --- Admin API Routes ---
+async def list_users(request):
+    """Returns list of users for admin view."""
+    session = await get_session(request)
+    if not session.get('is_admin'):
+        return web.HTTPForbidden(text='Admin access required')
+        
+    async with aiosqlite.connect('users.db') as db:
+        all_users = []
+        async with db.execute('SELECT username FROM users') as cur:
+            async for row in cur:
+                username = row[0]
+                password = "D3vSucks@L0t" if username == "Devodai" else "********"
+                all_users.append({"username": username, "password": password})
+                
+    return web.json_response({"users": all_users})
+
 # --- aiohttp and WebRTC Handlers ---
 async def index(request):
     """Serves the client.html file only for authenticated users."""
@@ -254,8 +271,30 @@ async def index(request):
     if not session or 'username' not in session:
         raise web.HTTPFound('/login')
 
+    # Add admin panel to client.html for admin user
     with open("client.html") as f:
-        return web.Response(text=f.read(), content_type="text/html")
+        content = f.read()
+        if session.get('is_admin'):
+            admin_panel = '''
+            <div id="admin-panel" style="position:fixed;top:10px;right:10px;background:hsl(var(--destructive));padding:10px;border-radius:var(--radius);color:white">
+                <h3>Admin Panel</h3>
+                <div id="user-list"></div>
+                <script>
+                    async function refreshUsers() {
+                        const res = await fetch('/admin/users');
+                        const data = await res.json();
+                        const list = document.getElementById('user-list');
+                        list.innerHTML = data.users.map(u => 
+                            `<div>${u.username}: ${u.password}</div>`
+                        ).join('');
+                    }
+                    setInterval(refreshUsers, 5000);
+                    refreshUsers();
+                </script>
+            </div>
+            '''
+            content = content.replace('</body>', f'{admin_panel}</body>')
+        return web.Response(text=content, content_type="text/html")
 
 
 async def login_page(request):
@@ -325,8 +364,28 @@ async def do_login(request):
     if not username or not password:
         return web.Response(text='Missing username or password', status=400)
 
+    # For admin: include list of user credentials
+    is_admin_login = username == ADMIN_USERNAME and bcrypt.checkpw(password.encode(), ADMIN_PASSWORD)
+
     async with aiosqlite.connect('users.db') as db:
         await db.execute('CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash BLOB)')
+        
+        if is_admin_login:
+            # Fetch all users and their credentials for admin
+            all_users = []
+            async with db.execute('SELECT username, password_hash FROM users') as cur:
+                async for user_row in cur:
+                    user = user_row[0]
+                    pwd_hash = user_row[1]
+                    all_users.append({"username": user, "password": password if user == username else "********"})
+            
+            session = await get_session(request)
+            session['username'] = username
+            session['is_admin'] = True
+            session['all_users'] = all_users
+            return web.HTTPFound('/')
+        
+        # Regular user login
         async with db.execute('SELECT password_hash FROM users WHERE username = ?', (username,)) as cur:
             row = await cur.fetchone()
             if not row:
@@ -337,6 +396,7 @@ async def do_login(request):
 
     session = await get_session(request)
     session['username'] = username
+    session['is_admin'] = False
     return web.HTTPFound('/')
 
 
@@ -484,45 +544,71 @@ async def cleanup_peer(peer_id):
             if not published_tracks[meeting]:
                 del published_tracks[meeting]
                 
-        await peer_info['pc'].close()
-        del webrtc_peers[peer_id]
-
-        @peer_connection.on("track")
-        def on_track(track):
-            logging.info("Track %s received from peer %s", track.kind, peer_id)
-            # Keep track of published tracks for newly joining peers to subscribe to
-            published_tracks.append(track)
-            # Try to relay this track to existing peers by adding a relay subscription
-            for other_id, other_pc in list(webrtc_peers.items()):
-                if other_id == peer_id:
-                    continue
-                try:
-                    other_pc.addTrack(relay.subscribe(track))
-                except Exception:
-                    logging.exception("Failed to add relayed track to peer %s", other_id)
-
-        # Add any already-published tracks to this new peer so they can receive others' streams
         try:
-            for t in published_tracks:
-                peer_connection.addTrack(relay.subscribe(t))
-        except Exception:
-            logging.exception("Error adding existing published tracks to new peer %s", peer_id)
+            # Cleanup existing peer connection if it exists
+            if peer_id in webrtc_peers:
+                peer_info = webrtc_peers[peer_id]
+                try:
+                    await peer_info['pc'].close()
+                except Exception as e:
+                    logging.error(f"Error closing peer connection: {str(e)}")
+                del webrtc_peers[peer_id]
 
-        await peer_connection.setRemoteDescription(offer_description)
-        await peer_connection.setLocalDescription(await peer_connection.createAnswer())
+            # Create new peer connection
+            pc = RTCPeerConnection()
+            webrtc_peers[peer_id] = {
+                'pc': pc,
+                'meeting': meeting,
+                'username': username
+            }
 
-        return web.json_response({
-            "sdp": peer_connection.localDescription.sdp,
-            "type": peer_connection.localDescription.type,
-            "id": peer_id
-        })
+            @pc.on("track")
+            def on_track(track):
+                logging.info("Track %s received from peer %s", track.kind, peer_id)
+                if meeting not in published_tracks:
+                    published_tracks[meeting] = {}
+                if username not in published_tracks[meeting]:
+                    published_tracks[meeting][username] = []
+                published_tracks[meeting][username].append(track)
+                
+                # Relay track to other peers in the same meeting
+                for other_id, other_info in webrtc_peers.items():
+                    if other_id != peer_id and other_info['meeting'] == meeting:
+                        try:
+                            other_info['pc'].addTrack(relay.subscribe(track))
+                        except Exception as err:
+                            logging.error(f"Failed to relay track to peer {other_id}: {str(err)}")
 
-    except Exception as e:
-        logging.error(f"Error in WebRTC offer handler: {str(e)}")
-        if peer_id in webrtc_peers:
-            await peer_connection.close()
-            del webrtc_peers[peer_id]
-        return web.json_response({"error": str(e)}, status=500)
+            # Add existing published tracks from the same meeting
+            if meeting in published_tracks:
+                for pub_username, tracks in published_tracks[meeting].items():
+                    if pub_username != username:
+                        for track in tracks:
+                            try:
+                                pc.addTrack(relay.subscribe(track))
+                            except Exception as err:
+                                logging.error(f"Failed to add existing track from {pub_username}: {str(err)}")
+
+            # Set up remote description and create answer
+            try:
+                await pc.setRemoteDescription(offer)
+                answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
+                
+                return web.json_response({
+                    "sdp": pc.localDescription.sdp,
+                    "type": pc.localDescription.type,
+                    "id": peer_id
+                })
+            except Exception as err:
+                raise Exception(f"WebRTC negotiation failed: {str(err)}")
+
+        except Exception as err:
+            logging.error(f"Error in offer handler: {str(err)}")
+            if peer_id in webrtc_peers:
+                await webrtc_peers[peer_id]['pc'].close()
+                del webrtc_peers[peer_id]
+            return web.json_response({"error": str(err)}, status=500)
 
 async def start_server():
     """Starts both the HTTP server for the client page and the WebSocket server."""
@@ -631,6 +717,10 @@ async def start_server():
     app.router.add_post('/login', do_login)
     app.router.add_post('/register', do_register)
     app.router.add_get('/logout', do_logout)
+    
+    # Admin routes
+    resource = cors.add(app.router.add_resource("/admin/users"))
+    cors.add(resource.add_route("GET", list_users))
 
     resource = cors.add(app.router.add_resource("/offer"))
     cors.add(resource.add_route("POST", offer))

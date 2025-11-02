@@ -1,0 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-primary: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --font-display: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --font-code: "gg mono", "Source Code Pro", Consolas, monospace;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-full font-medium transition-colors duration-200;
+  }
+
+  .btn-primary {
+    @apply bg-discord-blue text-white hover:bg-opacity-80;
+  }
+
+  .btn-danger {
+    @apply bg-discord-red text-white hover:bg-opacity-80;
+  }
+
+  .video-container {
+    @apply relative w-full h-full bg-discord-darkest rounded-xl overflow-hidden;
+  }
+
+  .video-controls {
+    @apply absolute bottom-4 left-4 flex space-x-2;
+  }
+
+  .control-btn {
+    @apply btn flex items-center space-x-2 bg-discord-darker text-discord-light hover:bg-discord-dark;
+  }
+
+  .control-btn.active {
+    @apply bg-discord-blue;
+  }
+
+  .control-btn.muted {
+    @apply bg-discord-red;
+  }
+
+  .chat-container {
+    @apply fixed right-6 bottom-6 w-80 bg-discord-darker rounded-xl shadow-lg flex flex-col h-[480px];
+  }
+
+  .chat-header {
+    @apply p-4 bg-discord-dark rounded-t-xl border-b border-discord-darkest flex items-center justify-between;
+  }
+
+  .chat-messages {
+    @apply flex-1 overflow-y-auto p-4 space-y-4;
+  }
+
+  .message {
+    @apply flex flex-col space-y-1;
+  }
+
+  .message .username {
+    @apply text-discord-blue font-medium hover:underline cursor-pointer;
+  }
+
+  .message .content {
+    @apply text-discord-light;
+  }
+
+  .message-input {
+    @apply p-4 bg-discord-dark rounded-b-xl;
+  }
+
+  .message-input input {
+    @apply w-full px-4 py-2 bg-discord-darkest text-discord-light rounded-md border-none focus:outline-none focus:ring-2 focus:ring-discord-blue;
+  }
+}
+
+/* Base styles */
+body {
+  @apply m-0 p-0 bg-discord-darkest text-discord-light font-sans antialiased h-screen w-screen overflow-hidden;
+}
+
+#meeting-container {
+  @apply w-full h-full flex flex-col bg-discord-darker;
+}
+
+#video-grid {
+  @apply flex-grow flex justify-center items-center p-4 gap-3 flex-wrap bg-discord-dark;
+}
+
+video {
+  @apply w-[400px] h-[300px] object-cover bg-discord-darkest rounded-xl border-2 border-discord-darker shadow-lg;
+}
+
+#localVideo {
+  @apply border-discord-blue;
+}
+
+#controls-bar {
+  @apply flex justify-center items-center bg-discord-darker p-4 shadow-xl;
+}
+
+.control-icon {
+  @apply w-5 h-5;
+}

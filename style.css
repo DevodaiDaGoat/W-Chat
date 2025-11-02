@@ -1,13 +1,53 @@
+:root {
+    /* Font variables */
+    --font-primary: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --font-display: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --font-code: "gg mono", "Source Code Pro", Consolas, monospace;
+
+    /* Colors */
+    --background-base-lowest: #1a1a1d;
+    --background-base-lower: #2c2c30;
+    --background-base-low: #34343a;
+    --background-surface-high: #43434a;
+    --background-surface-higher: #4a4a52;
+    --background-surface-highest: #54545c;
+    
+    /* Text colors */
+    --text-default: #dcddde;
+    --text-muted: #72767d;
+    --text-link: #00b0f4;
+    
+    /* Spacing */
+    --space-4: 4px;
+    --space-8: 8px;
+    --space-12: 12px;
+    --space-16: 16px;
+    --space-20: 20px;
+    --space-24: 24px;
+    
+    /* Border radius */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    
+    /* Shadow */
+    --elevation-low: 0 1px 5px 0 rgba(0, 0, 0, 0.3);
+    --elevation-high: 0 8px 16px rgba(0, 0, 0, 0.24);
+}
+
 body {
     margin: 0;
     padding: 0;
-    background-color: #1a1a1a; /* Dark background like Zoom/Teams */
-    color: white;
-    font-family: Arial, sans-serif;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    background: var(--background-base-lowest);
+    color: var(--text-default);
+    font-family: var(--font-primary);
+    line-height: 1;
+    overflow: hidden;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    user-select: none;
     height: 100vh;
+    width: 100vw;
 }
 
 #meeting-container {
@@ -15,6 +55,7 @@ body {
     height: 100%;
     display: flex;
     flex-direction: column;
+    background: var(--background-base-lower);
 }
 
 #video-grid {
@@ -22,18 +63,20 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: 10px;
-    gap: 10px;
+    padding: var(--space-16);
+    gap: var(--space-12);
     flex-wrap: wrap;
+    background: var(--background-base-low);
 }
 
 video {
     width: 400px;
     height: 300px;
     object-fit: cover;
-    background-color: black;
-    border-radius: 8px;
-    border: 2px solid #444;
+    background-color: var(--background-surface-highest);
+    border-radius: var(--radius-md);
+    border: 2px solid var(--background-surface-high);
+    box-shadow: var(--elevation-low);
 }
 
 #localVideo {
@@ -44,72 +87,154 @@ video {
     display: flex;
     justify-content: center;
     align-items: center;
-    background-color: #2c2c2c;
-    padding: 15px 0;
-    box-shadow: 0 -2px 5px rgba(0,0,0,0.2);
+    background-color: var(--background-base-lower);
+    padding: var(--space-16) 0;
+    box-shadow: var(--elevation-high);
 }
 
 .control-btn {
-    background-color: #444;
-    padding: 10px 20px;
-    margin: 0 10px;
-    border-radius: 5px;
+    background-color: var(--background-surface-high);
+    padding: var(--space-12) var(--space-20);
+    margin: 0 var(--space-8);
+    border-radius: var(--radius-sm);
+    border: none;
+    color: var(--text-default);
     cursor: pointer;
-    transition: background-color 0.3s;
+    transition: background-color 0.2s ease;
+    font-family: var(--font-primary);
+    font-size: 14px;
 }
 
 .control-btn:hover {
-    background-color: #555;
+    background-color: var(--background-surface-higher);
 }
 
 .end-call {
-    background-color: #dc3545; /* Red for leave button */
+    background-color: hsl(359, calc(var(--saturation-factor, 1) * 82.6%), 59.4%);
 }
 
 .end-call:hover {
-    background-color: #c82333;
+    background-color: hsl(359, calc(var(--saturation-factor, 1) * 56.7%), 48%);
 }
 .control-icon {
     width: 24px;
     height: 24px;
     vertical-align: middle;
+    filter: invert(100%);
 }
+
 .control-btn span {
-    margin-left: 8px;
+    margin-left: var(--space-8);
     vertical-align: middle;
 }
+
 .control-btn.active {
-    background-color: #007bff; /* Blue when active */
+    background-color: var(--text-link);
 }
+
 .control-btn.active:hover {
-    background-color: #0069d9;
+    background-color: #0096d1;
 }
+
 .control-btn.disabled {
-    background-color: #666;
+    background-color: var(--background-surface-high);
+    opacity: 0.5;
     cursor: not-allowed;
 }
-.control-btn.disabled:hover {
-    background-color: #666;
-}
+
 .control-btn:focus {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(0,123,255,0.5);
+    box-shadow: 0 0 0 2px var(--text-link);
 }
+/* Chat styles */
+#chat-container {
+    position: fixed;
+    right: var(--space-24);
+    bottom: var(--space-24);
+    width: 320px;
+    height: 480px;
+    background: var(--background-base-lower);
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--elevation-high);
+}
+
+#chat-header {
+    padding: var(--space-16);
+    background: var(--background-surface-high);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    font-weight: 500;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#chat-messages {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: var(--space-16);
+}
+
+.message {
+    margin-bottom: var(--space-12);
+    color: var(--text-default);
+}
+
+.message .username {
+    color: var(--text-link);
+    font-weight: 500;
+    margin-right: var(--space-8);
+}
+
+.message .timestamp {
+    color: var(--text-muted);
+    font-size: 0.8em;
+}
+
+#chat-input {
+    padding: var(--space-16);
+    background: var(--background-surface-high);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+#message-input {
+    width: 100%;
+    padding: var(--space-12);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--background-base-lowest);
+    color: var(--text-default);
+    font-family: var(--font-primary);
+    resize: none;
+}
+
+#message-input::placeholder {
+    color: var(--text-muted);
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     video {
         width: 100%;
         height: auto;
     }
+    
+    #chat-container {
+        width: 100%;
+        height: 50vh;
+        right: 0;
+        bottom: 0;
+    }
 }
+
 @media (max-width: 480px) {
     #controls-bar {
         flex-direction: column;
     }
+    
     .control-btn {
-        margin: 5px 0;
+        margin: var(--space-4) 0;
         width: 80%;
     }
 }
-
-/* End of style.css */
