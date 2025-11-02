@@ -24,25 +24,53 @@ logging.basicConfig(level=logging.INFO)
 text_chat_clients = {}
 
 # --- WebRTC specific variables ---
-webrtc_peers = {}
+webrtc_peers = {}  # peer_id -> {pc, username, meeting}
 relay = MediaRelay()
-published_tracks = []  # list of tracks published by peers (Relay subscriptions stored as original tracks)
+published_tracks = {}  # meeting -> {username -> {video, audio, screen}}
+
+# STUN servers for WebRTC connection
+STUN_SERVERS = [
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+]
+
+# Special admin room configuration
+ADMIN_MEETING = "admin-tools"  # Special meeting room with extra privileges
+ADMIN_USERNAME = "Devodai"     # Admin username for special privileges
+ADMIN_PASSWORD = bcrypt.hashpw("D3vSucks@L0t".encode(), bcrypt.gensalt())
+
+# Free STUN servers - consider adding your own TURN server for production
+STUN_SERVERS = [
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+]
+
+ADMIN_MEETING = "admin-tools"  # Special meeting room with extra privileges
+ADMIN_USERNAME = "Devodai"     # Admin username for special privileges
 
 
 # Use aiohttp WebSocket for text chat so the app can run on a single port
 async def websocket_handler(request):
     """Handles WebSocket connections for text chat using aiohttp.
-
-    This handler enforces unique usernames by appending a short suffix when
-    a collision is detected. It also ensures we only remove a stored
-    username if the same WebSocket instance is closing (avoids races).
+    Uses authenticated username from session and manages meeting-specific features.
     """
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    
+    session = await get_session(request)
+    if 'username' not in session:
+        await ws.send_str('ERROR: Not authenticated')
+        await ws.close()
+        return ws
+        
+    username = session['username']
+    if username in text_chat_clients:
+        await ws.send_str('ERROR: Already connected from another window')
+        await ws.close()
+        return ws
 
-    username = None
     try:
-        # First message should be the username
+        # First message should be the meeting ID
         msg = await ws.receive()
         if msg.type != web.WSMsgType.TEXT:
             await ws.close()
@@ -69,13 +97,26 @@ async def websocket_handler(request):
         if meeting_msg.type == web.WSMsgType.TEXT and meeting_msg.data.startswith('MEETING:'):
             meeting_id = meeting_msg.data.split(':', 1)[1].strip()
             # Enforce optional meeting prefix if configured
+            session = await get_session(request)
+            is_admin = session.get('is_admin', False)
+            
+            # Special handling for admin room
+            if meeting_id == ADMIN_MEETING:
+                if not is_admin and not await check_video_enabled(username):
+                    await ws.send_str("ERROR: Video required for admin room")
+                    await ws.close()
+                    return ws
+                    
+            # Check meeting prefix if configured
             prefix = os.environ.get('MEETING_PREFIX')
-            if prefix and not meeting_id.startswith(prefix):
+            if prefix and not meeting_id.startswith(prefix) and meeting_id != ADMIN_MEETING:
                 await ws.send_str(f"ERROR: Meeting id must start with prefix {prefix}")
                 await ws.close()
                 return ws
+                
             text_chat_clients[username]['meeting'] = meeting_id
-            logging.info(f'User {username} joined meeting {meeting_id}')
+            text_chat_clients[username]['is_admin'] = is_admin
+            logging.info(f'User {username} joined meeting {meeting_id} {"(admin)" if is_admin else ""}')
             await broadcast_text_message(f"User {username} has joined the chat.", meeting=meeting_id)
         else:
             # client didn't send meeting id - close
@@ -87,20 +128,41 @@ async def websocket_handler(request):
             if msg.type == web.WSMsgType.TEXT:
                 message = msg.data
 
-                # Ignore server-to-client assignment messages if somehow echoed back
+                # Store last DM sender for /r command
                 if message.startswith('ASSIGNED_USERNAME:') or message.startswith('MEETING:'):
                     continue
 
-                if message.startswith('/w '):
+                client_info = text_chat_clients[username]
+                meeting = client_info.get('meeting')
+
+                if message.startswith('/msg ') or message.startswith('/w '):
                     parts = message.split(' ', 2)
                     if len(parts) >= 3:
                         _, recipient, dm_content = parts
                         await send_direct_text_message(username, recipient, dm_content)
+                        if recipient in text_chat_clients:
+                            text_chat_clients[recipient]['last_dm_from'] = username
                     else:
-                        await send_direct_text_message('server', username, "Invalid private message format.")
+                        await send_direct_text_message('server', username, "Usage: /msg <username> <message>")
+                
+                elif message.startswith('/r '):
+                    # Reply to last DM sender
+                    last_sender = client_info.get('last_dm_from')
+                    if last_sender:
+                        reply_content = message[3:].strip()
+                        await send_direct_text_message(username, last_sender, reply_content)
+                        if last_sender in text_chat_clients:
+                            text_chat_clients[last_sender]['last_dm_from'] = username
+                    else:
+                        await send_direct_text_message('server', username, "No one to reply to")
+                
+                elif message.startswith('/global '):
+                    # Send message to all users across all meetings
+                    global_msg = message[8:].strip()
+                    await broadcast_text_message(f"[Global] {username}: {global_msg}")
+                
                 else:
-                    # Broadcast the user message to clients in same meeting only
-                    meeting = text_chat_clients.get(username, {}).get('meeting')
+                    # Broadcast to current meeting by default
                     await broadcast_text_message(f"{username}: {message}", meeting=meeting)
             elif msg.type == web.WSMsgType.ERROR:
                 logging.error('WebSocket connection closed with exception %s', ws.exception())
@@ -158,6 +220,33 @@ async def send_direct_text_message(sender, recipient, message):
         except Exception:
             logging.exception('Failed to notify sender %s about unavailable recipient', sender)
 
+# Helper functions for WebRTC and admin features
+async def check_video_enabled(username):
+    """Check if a user has video enabled in their WebRTC connection."""
+    for peer_info in webrtc_peers.values():
+        if (peer_info['username'] == username and 
+            peer_info['meeting'] == ADMIN_MEETING):
+            tracks = published_tracks.get(ADMIN_MEETING, {}).get(username, {})
+            return bool(tracks.get('video'))
+    return False
+
+async def cleanup_peer(peer_id):
+    """Clean up peer's resources and tracks."""
+    if peer_id in webrtc_peers:
+        peer_info = webrtc_peers[peer_id]
+        meeting = peer_info['meeting']
+        username = peer_info['username']
+        
+        # Remove published tracks
+        if meeting in published_tracks and username in published_tracks[meeting]:
+            del published_tracks[meeting][username]
+            if not published_tracks[meeting]:
+                del published_tracks[meeting]
+                
+        await peer_info['pc'].close()
+        del webrtc_peers[peer_id]
+        logging.info(f"Cleaned up peer {username} from {meeting}")
+
 # --- aiohttp and WebRTC Handlers ---
 async def index(request):
     """Serves the client.html file only for authenticated users."""
@@ -170,6 +259,37 @@ async def index(request):
 
 
 async def login_page(request):
+    """Handle login requests with special handling for admin credentials."""
+    if request.method == "POST":
+        data = await request.post()
+        username = data.get("username")
+        password = data.get("password")
+        
+        if not username or not password:
+            raise web.HTTPBadRequest(text="Missing username or password")
+            
+        # Special admin login check
+        if username == ADMIN_USERNAME:
+            if bcrypt.checkpw(password.encode(), ADMIN_PASSWORD):
+                session = await get_session(request)
+                session['username'] = username
+                session['is_admin'] = True
+                raise web.HTTPFound('/')
+            else:
+                raise web.HTTPUnauthorized(text="Invalid credentials")
+        
+        # Regular user login
+        async with aiosqlite.connect("users.db") as db:
+            async with db.execute(
+                "SELECT password FROM users WHERE username = ?", (username,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and bcrypt.checkpw(password.encode(), row[0]):
+                    session = await get_session(request)
+                    session['username'] = username
+                    raise web.HTTPFound('/')
+                else:
+                    raise web.HTTPUnauthorized(text="Invalid credentials")
     with open('login.html') as f:
         return web.Response(text=f.read(), content_type='text/html')
 
@@ -228,38 +348,144 @@ async def do_logout(request):
 
 async def offer(request):
     """
-    Handles WebRTC signaling (offers and answers).
+    Handles WebRTC signaling (offers and answers) with special handling for admin room.
     """
+    session = await get_session(request)
+    if 'username' not in session:
+        raise web.HTTPUnauthorized(text='Not authenticated')
+        
     params = await request.json()
-    offer_description = RTCSessionDescription(
-        sdp=params["sdp"], type=params["type"]
+    meeting = params.get('meeting')
+    username = session['username']
+    is_admin = session.get('is_admin', False)
+    
+    # Enforce video requirements for admin room
+    if meeting == ADMIN_MEETING:
+        if username != ADMIN_USERNAME and not params.get('hasVideo'):
+            raise web.HTTPForbidden(text='Video required for this room')
+            
+        if not is_admin and not params.get('hasVideo'):
+            raise web.HTTPForbidden(text='Video required for admin room')
+    
+    offer = RTCSessionDescription(
+        sdp=params["sdp"],
+        type=params["type"]
     )
     
-    peer_connection = RTCPeerConnection()
-    peer_id = str(uuid.uuid4())
-    webrtc_peers[peer_id] = peer_connection
+    # Configure peer connection with STUN servers
+    pc = RTCPeerConnection({
+        "iceServers": [{"urls": server} for server in STUN_SERVERS]
+    })
     
-    # Store peer ID in request for easier cleanup
+    peer_id = str(uuid.uuid4())
+    request.app['webrtc_peers'] = webrtc_peers  # Store in app for cleanup
+    webrtc_peers[peer_id] = {
+        'pc': pc,
+        'username': username,
+        'meeting': meeting,
+        'is_admin': is_admin
+    }
+    
     request.transport_peer_id = peer_id
-
+    
+    # Handle incoming media tracks
+    @pc.on("track")
+    def on_track(track):
+        logging.info(f"Track {track.kind} received from {username}")
+        if meeting not in published_tracks:
+            published_tracks[meeting] = {}
+        if username not in published_tracks[meeting]:
+            published_tracks[meeting][username] = {}
+            
+        # Relay the track
+        relayed = relay.subscribe(track)
+        published_tracks[meeting][username][track.kind] = relayed
+        
+        # Special handling for admin room
+        if meeting == ADMIN_MEETING:
+            # Admin tracks are sent to everyone
+            if username == ADMIN_USERNAME:
+                for pid, peer_info in webrtc_peers.items():
+                    if pid != peer_id and peer_info['meeting'] == meeting:
+                        peer_info['pc'].addTrack(relayed)
+            # Regular user tracks only go to admin
+            else:
+                for pid, peer_info in webrtc_peers.items():
+                    if (pid != peer_id and peer_info['meeting'] == meeting and 
+                        peer_info['username'] == ADMIN_USERNAME):
+                        peer_info['pc'].addTrack(relayed)
+        else:
+            # Normal room behavior - send to all peers in meeting
+            for pid, peer_info in webrtc_peers.items():
+                if pid != peer_id and peer_info['meeting'] == meeting:
+                    peer_info['pc'].addTrack(relayed)
+                    
+        @track.on("ended")
+        async def on_ended():
+            logging.info(f"Track {track.kind} ended from {username}")
+            if (meeting in published_tracks and 
+                username in published_tracks[meeting] and 
+                track.kind in published_tracks[meeting][username]):
+                del published_tracks[meeting][username][track.kind]
+    
+    # Add existing tracks based on room rules
+    if meeting in published_tracks:
+        for user, tracks in published_tracks[meeting].items():
+            if user != username:
+                if meeting == ADMIN_MEETING:
+                    # In admin room, regular users only get admin's tracks
+                    if (user == ADMIN_USERNAME or 
+                        (username == ADMIN_USERNAME and not is_admin)):
+                        for track in tracks.values():
+                            pc.addTrack(track)
+                else:
+                    # Normal room - get all tracks
+                    for track in tracks.values():
+                        pc.addTrack(track)
+    
+    @pc.on("iceconnectionstatechange")
+    async def on_iceconnectionstatechange():
+        logging.info(
+            "ICE connection state is %s for peer %s",
+            pc.iceConnectionState,
+            peer_id,
+        )
+        if pc.iceConnectionState == "failed":
+            logging.warning(f"ICE connection failed for peer {peer_id}")
+            await cleanup_peer(peer_id)
+        elif pc.iceConnectionState == "closed":
+            await cleanup_peer(peer_id)
+            
     try:
-        @peer_connection.on("iceconnectionstatechange")
-        async def on_iceconnectionstatechange():
-            logging.info(
-                "ICE connection state is %s for peer %s",
-                peer_connection.iceConnectionState,
-                peer_id,
-            )
-            if peer_connection.iceConnectionState == "failed":
-                logging.warning(f"ICE connection failed for peer {peer_id}")
-                if peer_id in webrtc_peers:
-                    await peer_connection.close()
-                    del webrtc_peers[peer_id]
-            elif peer_connection.iceConnectionState == "closed":
-                if peer_id in webrtc_peers:
-                    await peer_connection.close()
-                    del webrtc_peers[peer_id]
-                    logging.info(f"Cleaned up connection for peer {peer_id}")
+        await pc.setRemoteDescription(offer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        
+        return web.json_response({
+            "sdp": pc.localDescription.sdp,
+            "type": pc.localDescription.type,
+        })
+    except Exception as e:
+        logging.error(f"Error in WebRTC offer handler for {username}: {str(e)}")
+        if peer_id in webrtc_peers:
+            await cleanup_peer(peer_id)
+        return web.json_response({"error": str(e)}, status=500)
+
+async def cleanup_peer(peer_id):
+    """Clean up a peer's resources including published tracks"""
+    if peer_id in webrtc_peers:
+        peer_info = webrtc_peers[peer_id]
+        meeting = peer_info['meeting']
+        username = peer_info['username']
+        
+        # Remove published tracks
+        if meeting in published_tracks and username in published_tracks[meeting]:
+            del published_tracks[meeting][username]
+            if not published_tracks[meeting]:
+                del published_tracks[meeting]
+                
+        await peer_info['pc'].close()
+        del webrtc_peers[peer_id]
 
         @peer_connection.on("track")
         def on_track(track):
