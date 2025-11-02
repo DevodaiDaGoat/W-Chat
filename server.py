@@ -13,6 +13,10 @@ import websockets
 import aiosqlite # For asynchronous SQLite access
 import bcrypt # For secure password hashing
 import base64 # Added missing import for session handling/cookie encryption
+from dotenv import load_dotenv # <-- NEW IMPORT
+
+# Load environment variables from .env file (now correctly accessed via Secret Files)
+load_dotenv() # <-- NEW LINE
 
 # aiortc imports
 from aiohttp import web
@@ -30,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 DB_PATH = "users.db"
-# NOTE: SECRET_KEY should be loaded from a .env file or generated securely
+# NOTE: SECRET_KEY is now loaded from the .env file
 SECRET_KEY = os.environ.get('SECRET_KEY', 'default-insecure-secret-key-change-me').encode('utf-8')
 
 # --- In-memory state ---
