@@ -70,14 +70,14 @@ python3 build_css.py
 
 4. **Start Server**
 ```bash
-python3 server_fixed.py
+python3 server.py
 ```
 
 ## Usage
 
 ### Starting the Server
 ```bash
-python3 server_fixed.py
+python3 server.py
 ```
 
 The server will start on:
@@ -105,7 +105,7 @@ The server will start on:
 
 ```
 /mnt/okcomputer/output/
-├── server_fixed.py      # Main server application (FIXED)
+├── server.py      # Main server application (FIXED)
 ├── client.html          # Main client interface
 ├── login.html           # Login page
 ├── register.html        # Registration page
@@ -162,7 +162,7 @@ The server will start on:
 Enable debug logging by setting:
 ```bash
 export LOG_LEVEL=DEBUG
-python3 server_fixed.py
+python3 server.py
 ```
 
 ## Production Deployment
@@ -180,7 +180,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
 EXPOSE 3000 3001
-CMD ["python", "server_fixed.py"]
+CMD ["python", "server.py"]
 ```
 
 ### Environment Configuration
