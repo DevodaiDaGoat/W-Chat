@@ -20,7 +20,7 @@ python3 build_css.py
 ### 3. Run the Server
 ```bash
 # Start the server
-python3 server_fixed.py
+python3 server.py
 ```
 
 ### 4. Access the Application
@@ -61,7 +61,7 @@ pip install websockets
 If port 3000 is already in use, set a different port:
 ```bash
 export PORT=3002
-python3 server_fixed.py
+python3 server.py
 ```
 
 ### CSS Not Loading
@@ -87,7 +87,7 @@ Expected output should show:
 
 ### Development Mode
 ```bash
-python3 server_fixed.py
+python3 server.py
 ```
 
 ### Production Mode
@@ -112,7 +112,7 @@ gunicorn server_fixed:start_server --worker-class aiohttp.GunicornWebWorker --bi
 ## Common Issues and Solutions
 
 ### Issue: "await allowed only within async function"
-**Solution**: This is fixed in `server_fixed.py`. Use the fixed version.
+**Solution**: This is fixed in `server.py`. Use the fixed version.
 
 ### Issue: "Unknown at rule @tailwind"
 **Solution**: The CSS files have been fixed to use proper CSS syntax.
@@ -127,13 +127,13 @@ pip install aiohttp aiortc websockets
 **Solution**: Change the port:
 ```bash
 export PORT=3002
-python3 server_fixed.py
+python3 server.py
 ```
 
 ## File Locations
 
 After installation, your directory should contain:
-- `server_fixed.py` - The fixed server application
+- `server.py` - The fixed server application
 - `client.html` - Main web interface
 - `dist/style.css` - Generated CSS file
 - `requirements.txt` - Python dependencies
