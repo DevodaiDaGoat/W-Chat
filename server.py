@@ -20,6 +20,7 @@ from aiortc.contrib.media import MediaRelay, MediaPlayer
 logging.basicConfig(level=logging.INFO)
 
 # --- Text Chat specific variables ---
+# Map username -> {'ws': WebSocketResponse, 'meeting': meeting_id}
 text_chat_clients = {}
 
 # --- WebRTC specific variables ---
@@ -43,22 +44,42 @@ async def websocket_handler(request):
     try:
         # First message should be the username
         msg = await ws.receive()
-        if msg.type == web.WSMsgType.TEXT:
-            requested = msg.data.strip()
+        if msg.type != web.WSMsgType.TEXT:
+            await ws.close()
+            return ws
 
-            # Ensure a unique username to prevent accidental overwrites
-            assigned = requested
-            if assigned in text_chat_clients:
-                suffix = str(uuid.uuid4())[:8]
-                assigned = f"{requested}_{suffix}"
-                # Inform the client of the assigned username so the UI can update
-                await ws.send_str(f"ASSIGNED_USERNAME:{assigned}")
+        requested = msg.data.strip()
 
-            username = assigned
-            text_chat_clients[username] = ws
-            logging.info(f'Text chat connection opened for {username}')
-            await broadcast_text_message(f"User {username} has joined the chat.")
+        # Ensure a unique username to prevent accidental overwrites
+        assigned = requested
+        if assigned in text_chat_clients:
+            suffix = str(uuid.uuid4())[:8]
+            assigned = f"{requested}_{suffix}"
+            # Inform the client of the assigned username so the UI can update
+            await ws.send_str(f"ASSIGNED_USERNAME:{assigned}")
+
+        username = assigned
+        # Temporarily store ws without meeting until client sends meeting id
+        text_chat_clients[username] = {'ws': ws, 'meeting': None}
+        logging.info(f'Text chat connection opened for {username} (meeting pending)')
+
+        # Expect the client to send a meeting id next as: MEETING:<meetingId>
+        meeting_msg = await ws.receive()
+        meeting_id = None
+        if meeting_msg.type == web.WSMsgType.TEXT and meeting_msg.data.startswith('MEETING:'):
+            meeting_id = meeting_msg.data.split(':', 1)[1].strip()
+            # Enforce optional meeting prefix if configured
+            prefix = os.environ.get('MEETING_PREFIX')
+            if prefix and not meeting_id.startswith(prefix):
+                await ws.send_str(f"ERROR: Meeting id must start with prefix {prefix}")
+                await ws.close()
+                return ws
+            text_chat_clients[username]['meeting'] = meeting_id
+            logging.info(f'User {username} joined meeting {meeting_id}')
+            await broadcast_text_message(f"User {username} has joined the chat.", meeting=meeting_id)
         else:
+            # client didn't send meeting id - close
+            await ws.send_str('ERROR: Missing meeting id. Send MEETING:<id> after username.')
             await ws.close()
             return ws
 
@@ -67,7 +88,7 @@ async def websocket_handler(request):
                 message = msg.data
 
                 # Ignore server-to-client assignment messages if somehow echoed back
-                if message.startswith('ASSIGNED_USERNAME:'):
+                if message.startswith('ASSIGNED_USERNAME:') or message.startswith('MEETING:'):
                     continue
 
                 if message.startswith('/w '):
@@ -78,8 +99,9 @@ async def websocket_handler(request):
                     else:
                         await send_direct_text_message('server', username, "Invalid private message format.")
                 else:
-                    # Broadcast the user message to all connected clients
-                    await broadcast_text_message(f"{username}: {message}")
+                    # Broadcast the user message to clients in same meeting only
+                    meeting = text_chat_clients.get(username, {}).get('meeting')
+                    await broadcast_text_message(f"{username}: {message}", meeting=meeting)
             elif msg.type == web.WSMsgType.ERROR:
                 logging.error('WebSocket connection closed with exception %s', ws.exception())
 
@@ -88,27 +110,53 @@ async def websocket_handler(request):
 
     finally:
         # Only remove the entry if it still points to this WebSocket
-        if username and username in text_chat_clients and text_chat_clients[username] is ws:
+        if username and username in text_chat_clients and text_chat_clients[username]['ws'] is ws:
+            meeting = text_chat_clients[username]['meeting']
             del text_chat_clients[username]
             logging.info(f'Text chat connection closed for {username}')
-            await broadcast_text_message(f"User {username} has left the chat.")
+            await broadcast_text_message(f"User {username} has left the chat.", meeting=meeting)
 
     return ws
 
 
-async def broadcast_text_message(message):
-    """Sends a message to all connected text clients (aiohttp WebSocket)."""
-    if text_chat_clients:
-        await asyncio.gather(*[client.send_str(message) for client in text_chat_clients.values()])
+async def broadcast_text_message(message, meeting=None):
+    """Sends a message to all connected text clients (aiohttp WebSocket).
+
+    If meeting is provided, only clients in that meeting receive the message.
+    """
+    if not text_chat_clients:
+        return
+
+    async def _send(entry):
+        try:
+            await entry['ws'].send_str(message)
+        except Exception:
+            logging.exception('Failed to send text message to a client')
+
+    if meeting is None:
+        await asyncio.gather(*[_send(entry) for entry in text_chat_clients.values()])
+    else:
+        await asyncio.gather(*[_send(entry) for entry in text_chat_clients.values() if entry.get('meeting') == meeting])
 
 async def send_direct_text_message(sender, recipient, message):
-    """Sends a private message to a specific user (aiohttp WebSocket)."""
-    if recipient in text_chat_clients:
-        await text_chat_clients[recipient].send_str(f"[DM from {sender}]: {message}")
-        if sender != 'server' and sender in text_chat_clients:
-            await text_chat_clients[sender].send_str(f"[DM to {recipient}]: {message}")
-    elif sender != 'server' and sender in text_chat_clients:
-        await text_chat_clients[sender].send_str(f"User {recipient} is not online.")
+    """Sends a private message to a specific user (aiohttp WebSocket) within the same meeting."""
+    sender_entry = text_chat_clients.get(sender)
+    recipient_entry = text_chat_clients.get(recipient)
+    if recipient_entry and sender_entry and recipient_entry.get('meeting') == sender_entry.get('meeting'):
+        try:
+            await recipient_entry['ws'].send_str(f"[DM from {sender}]: {message}")
+        except Exception:
+            logging.exception('Failed to send DM to %s', recipient)
+        if sender != 'server':
+            try:
+                await sender_entry['ws'].send_str(f"[DM to {recipient}]: {message}")
+            except Exception:
+                logging.exception('Failed to send DM confirmation to %s', sender)
+    elif sender_entry:
+        try:
+            await sender_entry['ws'].send_str(f"User {recipient} is not online or not in your meeting.")
+        except Exception:
+            logging.exception('Failed to notify sender %s about unavailable recipient', sender)
 
 # --- aiohttp and WebRTC Handlers ---
 async def index(request):

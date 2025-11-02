@@ -154,7 +154,7 @@
             <button class="control-btn" id="screenShareBtn" onclick="toggleScreenShare()">
                 🖥️ Share Screen
             </button>
-            <button class="control-btn end-call" onclick="endCall()">
+            <button class="control-btn end-call" onclick="leaveMeeting()">
                 ❌ Leave
             </button>
         </div>
@@ -163,13 +163,17 @@
     <div id="chat-sidebar">
         <h2>Chat</h2>
         <div id="chatbox"></div>
-        <div id="messageInputContainer">
-            <input type="text" id="usernameInput" placeholder="Enter username" />
-            <button class="control-btn" onclick="connectTextChat()">Connect</button>
-            <br><br>
-            <input type="text" id="messageInput" placeholder="Type message..." disabled />
-            <button id="sendMessageBtn" class="control-btn" disabled onclick="sendMessage()">Send</button>
-        </div>
+                <div id="messageInputContainer">
+                        <input type="text" id="usernameInput" placeholder="Enter username" />
+                        <input type="text" id="meetingInput" placeholder="Meeting ID (e.g. M-123)" style="margin-top:6px" />
+                        <div style="display:flex;gap:8px;margin-top:8px">
+                            <button class="control-btn" onclick="connectTextChat()">Connect</button>
+                            <button class="control-btn" onclick="signOut()" style="background:#e07b7b">Sign Out</button>
+                        </div>
+                        <br>
+                        <input type="text" id="messageInput" placeholder="Type message..." disabled />
+                        <button id="sendMessageBtn" class="control-btn" disabled onclick="sendMessage()">Send</button>
+                </div>
     </div>
     
     <script>
@@ -233,9 +237,18 @@
             textWs.onopen = function(event) {
                 appendMessage('system', 'Connected to text chat.');
                 textWs.send(username);
+                // send meeting id next
+                const meetingId = document.getElementById('meetingInput').value.trim();
+                if (meetingId) {
+                    textWs.send(`MEETING:${meetingId}`);
+                } else {
+                    // if not provided, send empty meeting id
+                    textWs.send('MEETING:');
+                }
                 messageInput.disabled = false;
                 sendMessageBtn.disabled = false;
                 usernameInput.disabled = true;
+                document.getElementById('meetingInput').disabled = true;
             };
 
             textWs.onmessage = function(event) {
@@ -521,6 +534,23 @@
             isVideoEnabled = false;
             isAudioEnabled = true;
             isScreenShareEnabled = false;
+        }
+
+        // Leave the meeting: end media and navigate back to a simple lobby (root)
+        function leaveMeeting() {
+            endCall();
+            // Optionally navigate to a landing page or stay on the page. We'll go to root.
+            window.location = '/';
+        }
+
+        // Sign out (logs out server-side and redirects to login)
+        async function signOut() {
+            try {
+                await fetch('/logout');
+            } catch (e) {
+                console.error('Error while logging out', e);
+            }
+            window.location = '/login';
         }
 
     </script>
