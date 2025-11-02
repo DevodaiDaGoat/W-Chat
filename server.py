@@ -463,108 +463,41 @@ async def offer(request):
         
         # Special handling for admin room
         if meeting == ADMIN_MEETING:
-            # Admin tracks are sent to everyone
-            if username == ADMIN_USERNAME:
-                for pid, peer_info in webrtc_peers.items():
-                    if pid != peer_id and peer_info['meeting'] == meeting:
-                        peer_info['pc'].addTrack(relayed)
-            # Regular user tracks only go to admin
-            else:
-                for pid, peer_info in webrtc_peers.items():
-                    if (pid != peer_id and peer_info['meeting'] == meeting and 
-                        peer_info['username'] == ADMIN_USERNAME):
-                        peer_info['pc'].addTrack(relayed)
-        else:
-            # Normal room behavior - send to all peers in meeting
-            for pid, peer_info in webrtc_peers.items():
-                if pid != peer_id and peer_info['meeting'] == meeting:
-                    peer_info['pc'].addTrack(relayed)
-                    
-        @track.on("ended")
-        async def on_ended():
-            logging.info(f"Track {track.kind} ended from {username}")
-            if (meeting in published_tracks and 
-                username in published_tracks[meeting] and 
-                track.kind in published_tracks[meeting][username]):
-                del published_tracks[meeting][username][track.kind]
-    
-    # Add existing tracks based on room rules
-    if meeting in published_tracks:
-        for user, tracks in published_tracks[meeting].items():
-            if user != username:
-                if meeting == ADMIN_MEETING:
-                    # In admin room, regular users only get admin's tracks
-                    if (user == ADMIN_USERNAME or 
-                        (username == ADMIN_USERNAME and not is_admin)):
-                        for track in tracks.values():
-                            pc.addTrack(track)
-                else:
-                    # Normal room - get all tracks
-                    for track in tracks.values():
-                        pc.addTrack(track)
-    
-    @pc.on("iceconnectionstatechange")
-    async def on_iceconnectionstatechange():
-        logging.info(
-            "ICE connection state is %s for peer %s",
-            pc.iceConnectionState,
-            peer_id,
-        )
-        if pc.iceConnectionState == "failed":
-            logging.warning(f"ICE connection failed for peer {peer_id}")
-            await cleanup_peer(peer_id)
-        elif pc.iceConnectionState == "closed":
-            await cleanup_peer(peer_id)
-            
-    try:
-        await pc.setRemoteDescription(offer)
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        
-        return web.json_response({
-            "sdp": pc.localDescription.sdp,
-            "type": pc.localDescription.type,
-        })
-    except Exception as e:
-        logging.error(f"Error in WebRTC offer handler for {username}: {str(e)}")
-        if peer_id in webrtc_peers:
-            await cleanup_peer(peer_id)
-        return web.json_response({"error": str(e)}, status=500)
+            # ...existing code...
+                    if other_id != peer_id and other_info['meeting'] == meeting:
+                        try:
+                            other_info['pc'].addTrack(relay.subscribe(track))
+                        except Exception as err:
+                            logging.error(f"Failed to relay track to peer {other_id}: {str(err)}")
 
-async def cleanup_peer(peer_id):
-    """Clean up a peer's resources including published tracks"""
-    if peer_id in webrtc_peers:
-        peer_info = webrtc_peers[peer_id]
-        meeting = peer_info['meeting']
-        username = peer_info['username']
-        
-        # Remove published tracks
-        if meeting in published_tracks and username in published_tracks[meeting]:
-            del published_tracks[meeting][username]
-            if not published_tracks[meeting]:
-                del published_tracks[meeting]
-                
-        try:
-            # Cleanup existing peer connection if it exists
-            if peer_id in webrtc_peers:
-                peer_info = webrtc_peers[peer_id]
-                try:
-                    await peer_info['pc'].close()
-                except Exception as e:
-                    logging.error(f"Error closing peer connection: {str(e)}")
-                del webrtc_peers[peer_id]
+            # Add existing published tracks from the same meeting
+            if meeting in published_tracks:
+                for pub_username, tracks in published_tracks[meeting].items():
+                    if pub_username != username:
+                        for track in tracks:
+                            try:
+                                pc.addTrack(relay.subscribe(track))
+                            except Exception as err:
+                                logging.error(f"Failed to add existing track from {pub_username}: {str(err)}")
 
-            # Create new peer connection
-            pc = RTCPeerConnection()
-            webrtc_peers[peer_id] = {
-                'pc': pc,
-                'meeting': meeting,
-                'username': username
-            }
+            # Set up remote description and create answer
+            try:
+                offer_description = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
+                await pc.setRemoteDescription(offer_description)
+                answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
 
-            @pc.on("track")
-            def on_track(track):
-                logging.info("Track %s received from peer %s", track.kind, peer_id)
+                return web.json_response({
+                    "sdp": pc.localDescription.sdp,
+                    "type": pc.localDescription.type,
+                    "id": peer_id
+                })
+            except Exception as err:
+                logging.error(f"WebRTC negotiation failed: {str(err)}")
+                if peer_id in webrtc_peers:
+                    await pc.close()
+                    del webrtc_peers[peer_id]
+                return web.json_response({"error": str(err)}, status=500)
                 if meeting not in published_tracks:
                     published_tracks[meeting] = {}
                 if username not in published_tracks[meeting]:
@@ -578,7 +511,10 @@ async def cleanup_peer(peer_id):
                             other_info['pc'].addTrack(relay.subscribe(track))
                         except Exception as err:
                             logging.error(f"Failed to relay track to peer {other_id}: {str(err)}")
+>>>>>>> 5725ab3010b0b09b2b387a426250fb073a51a013
 
+<<<<<<< HEAD
+=======
             # Add existing published tracks from the same meeting
             if meeting in published_tracks:
                 for pub_username, tracks in published_tracks[meeting].items():
@@ -609,7 +545,6 @@ async def cleanup_peer(peer_id):
                 await webrtc_peers[peer_id]['pc'].close()
                 del webrtc_peers[peer_id]
             return web.json_response({"error": str(err)}, status=500)
-
 async def start_server():
     """Starts both the HTTP server for the client page and the WebSocket server."""
     
@@ -681,21 +616,14 @@ async def start_server():
 
     try:
         session_setup(app, EncryptedCookieStorage(secret_key))
-    except Exception as e:
-        logging.exception('Failed to initialize EncryptedCookieStorage with provided key: %s', e)
-        # Try regenerating a fresh Fernet key and retry (volatile)
+    except Exception as err:
+        logging.exception('Failed to initialize EncryptedCookieStorage even with a generated key. Falling back to SimpleCookieStorage (no encryption).')
         try:
-            fallback_key = Fernet.generate_key()
-            session_setup(app, EncryptedCookieStorage(fallback_key))
-            logging.warning('Using a newly-generated volatile Fernet key for sessions (will not persist across restarts).')
+            from aiohttp_session import SimpleCookieStorage
+            session_setup(app, SimpleCookieStorage())
         except Exception:
-            logging.exception('Failed to initialize EncryptedCookieStorage even with a generated key. Falling back to SimpleCookieStorage (no encryption).')
-            try:
-                from aiohttp_session import SimpleCookieStorage
-                session_setup(app, SimpleCookieStorage())
-            except Exception:
-                logging.exception('Failed to initialize any session storage. Exiting.')
-                raise
+            logging.exception('Failed to initialize any session storage. Exiting.')
+            raise
 
     # Configure CORS before adding routes
     cors = aiohttp_cors.setup(app, defaults={
