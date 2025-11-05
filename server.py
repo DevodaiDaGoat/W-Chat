@@ -328,28 +328,32 @@ async def on_cleanup(app):
 async def main():
     """Main entry point to start all servers."""
     
-    # --- Secret Key Setup ---
+    # --- Secret Key Setup (FIXED LOGIC) ---
     load_dotenv() # Load .env file
+    secret_key_bytes = None
     secret_key_str = os.environ.get("SECRET_KEY")
-    if not secret_key_str:
-        logger.warning("SECRET_KEY not found in environment. Generating a temporary key.")
-        logger.warning("DO NOT USE THIS IN PRODUCTION. Set a permanent SECRET_KEY env variable.")
-        secret_key_str = fernet.Fernet.generate_key().decode('utf-8')
+
+    if secret_key_str:
+        try:
+            # Test if the key from env is valid
+            secret_key_bytes_test = secret_key_str.encode('utf-8')
+            fernet.Fernet(secret_key_bytes_test) # This test will raise ValueError if invalid
+            secret_key_bytes = secret_key_bytes_test # It's valid, use it.
+            logger.info("Loaded SECRET_KEY from environment.")
+        except Exception as e:
+            logger.warning(f"Invalid SECRET_KEY found in environment: {e}. Generating temporary key.")
     
-    # Fernet key must be 32 bytes and base64-encoded
-    try:
-        secret_key_bytes = secret_key_str.encode('utf-8')
-        fernet.Fernet(secret_key_bytes) # Test if key is valid
-    except Exception as e:
-        logger.critical(f"SECRET_KEY is invalid. It must be 32 url-safe base64-encoded bytes. Error: {e}")
-        logger.info("Generating a valid temporary key to proceed...")
-        secret_key_bytes = fernet.Fernet.generate_key()
+    if not secret_key_bytes:
+        # If key was not found or was invalid, generate a new one.
+        logger.warning("SECRET_KEY not found or invalid. Generating a temporary key.")
+        logger.warning("DO NOT USE THIS IN PRODUCTION. Set a permanent SECRET_KEY env variable.")
+        secret_key_bytes = fernet.Fernet.generate_key() # Generate valid bytes directly
 
     
     # --- App Initialization ---
     app = web.Application()
     
-    # Setup session middleware
+    # Setup session middleware (This will now use a valid key)
     storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
     setup_session(app, storage)
     
