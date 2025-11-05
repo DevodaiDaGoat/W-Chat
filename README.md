@@ -101,23 +101,6 @@ The server will start on:
 - `/global <message>` - Send message to all rooms
 - `/help` - Show available commands
 
-## File Structure
-
-```
-/mnt/okcomputer/output/
-├── server.py      # Main server application (FIXED)
-├── client.html          # Main client interface
-├── login.html           # Login page
-├── register.html        # Registration page
-├── requirements.txt     # Python dependencies
-├── setup.py            # Automated setup script
-├── build_css.py        # CSS build script
-├── run.sh              # Run script
-├── style_fixed.css     # Fixed CSS (fallback)
-├── package.json        # Node.js dependencies
-└── README.md           # This file
-```
-
 ## Technical Details
 
 ### Server Architecture
