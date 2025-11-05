@@ -14,7 +14,7 @@ from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
 import aiohttp_cors # Changed to direct import of the module
-from aiohttp_cors import ResourceOptions, ALL # Kept ResourceOptions and ALL
+from aiohttp_cors import ResourceOptions # Kept ResourceOptions, removed ALL
 
 # Configure logging for debugging purposes
 logging.basicConfig(
