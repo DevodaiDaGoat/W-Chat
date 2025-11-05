@@ -13,7 +13,8 @@ import websockets
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
-from aiohttp_cors import setup, ResourceOptions, ALL # FIXED: Imported 'setup' instead of 'cors_middleware'
+import aiohttp_cors # Changed to direct import of the module
+from aiohttp_cors import ResourceOptions, ALL # Kept ResourceOptions and ALL
 
 # Configure logging for debugging purposes
 logging.basicConfig(
@@ -49,141 +50,166 @@ async def text_chat_handler(websocket, path):
         # Check for duplicate username
         if username in text_chat_clients:
             # Generate unique username
-            original_username = username
-            counter = 1
-            while username in text_chat_clients:
-                username = f"{original_username}#{counter}"
-                counter += 1
-            await websocket.send(f"WARNING: Username '{original_username}' taken. Assigned you: '{username}'")
-
-        text_chat_clients[username] = websocket
-        logger.info(f"Text chat connected: {username}. Total clients: {len(text_chat_clients)}")
-        
-        # Broadcast connection message
-        await broadcast_chat_message("SYSTEM", f"{username} has joined the chat.")
-        
-        # Listen for chat messages
-        async for message in websocket:
-            await broadcast_chat_message(username, message)
+            username = f"{username}_{uuid.uuid4().hex[:4]}"
             
+        text_chat_clients[username] = websocket
+        logger.info(f"Client '{username}' connected to text chat.")
+        
+        # Send join message to everyone
+        join_message = json.dumps({"type": "chat", "sender": "System", "content": f"'{username}' has joined the chat."})
+        await broadcast_chat_message(join_message)
+
+        # Main receive loop
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                if data.get("type") == "chat" and data.get("content"):
+                    chat_message = json.dumps({"type": "chat", "sender": username, "content": data["content"]})
+                    await broadcast_chat_message(chat_message, current_client=websocket)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON message from {username}: {message}")
+            except Exception as e:
+                logger.error(f"Error processing message from {username}: {e}")
+                
     except websockets.exceptions.ConnectionClosedOK:
-        logger.info(f"Text chat disconnected gracefully: {username}")
+        logger.info(f"Client '{username}' disconnected normally.")
     except Exception as e:
-        logger.error(f"Text chat error for {username}: {e}", exc_info=True)
+        logger.error(f"Text chat handler error for {username}: {e}")
     finally:
-        # Clean up client connection
+        if username and username in text_chat_clients:
+            del text_chat_clients[username]
+            logger.info(f"Client '{username}' removed from text chat list.")
+            # Send leave message to everyone
+            leave_message = json.dumps({"type": "chat", "sender": "System", "content": f"'{username}' has left the chat."})
+            # A broadcast here may fail if the server is shutting down.
+            asyncio.create_task(broadcast_chat_message(leave_message))
+
+async def broadcast_chat_message(message, current_client=None):
+    """Broadcasts a message to all connected chat clients."""
+    disconnected_clients = []
+    for username, websocket in text_chat_clients.items():
+        if websocket.open:
+            if websocket != current_client:
+                try:
+                    await websocket.send(message)
+                except websockets.exceptions.ConnectionClosed:
+                    disconnected_clients.append(username)
+                except Exception as e:
+                    logger.error(f"Error sending broadcast to {username}: {e}")
+        else:
+            disconnected_clients.append(username)
+            
+    # Clean up disconnected clients (handled by the finally block in text_chat_handler, but good practice)
+    for username in disconnected_clients:
         if username in text_chat_clients:
             del text_chat_clients[username]
-            logger.info(f"Text chat client removed: {username}. Remaining: {len(text_chat_clients)}")
-            asyncio.create_task(broadcast_chat_message("SYSTEM", f"{username} has left the chat."))
 
-async def broadcast_chat_message(sender, content):
-    """Sends a chat message to all connected clients."""
-    if not text_chat_clients:
-        return
 
-    message = json.dumps({"sender": sender, "content": content})
-    
-    # Create a list of send tasks
-    send_tasks = [client.send(message) for client in text_chat_clients.values()]
-    
-    # Wait for all sends to complete, gathering exceptions
-    await asyncio.gather(*send_tasks, return_exceptions=True)
-
-# ============================================================================\
-# WEB-RTC HANDLERS
-# ============================================================================\
+# ============================================================================
+# HTTP AND WEBRTC HANDLERS
+# ============================================================================
 
 async def index(request):
     """Serve the main client HTML page."""
-    # This server does not handle authentication logic, it redirects to client for now
-    with open(os.path.join(os.getcwd(), "client.html"), 'r') as f:
+    with open("client.html", "r") as f:
         html_content = f.read()
     return web.Response(text=html_content, content_type="text/html")
 
+async def healthcheck(request):
+    """Simple health check endpoint."""
+    return web.Response(text="OK", content_type="text/plain")
+
 async def offer(request):
-    """Handle the WebRTC offer/answer negotiation."""
+    """Handles WebRTC offers from the client."""
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-    # Create a new PeerConnection for the incoming offer
-    pc = RTCPeerConnection()
+    # Create a new peer connection
     peer_id = str(uuid.uuid4())
+    pc = RTCPeerConnection()
     webrtc_peers[peer_id] = pc
 
-    # Event handler for connection state changes
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        logger.info(f"PeerConnection {peer_id} state is {pc.connectionState}")
-        if pc.connectionState == "failed":
+    @pc.on("iceconnectionstatechange")
+    async def on_iceconnectionstatechange():
+        logger.info(f"ICE connection state is now {pc.iceConnectionState} for peer {peer_id}")
+        if pc.iceConnectionState == "failed":
             await pc.close()
-            webrtc_peers.pop(peer_id, None)
-        elif pc.connectionState == "closed":
-            webrtc_peers.pop(peer_id, None)
-            logger.info(f"PeerConnection {peer_id} removed.")
+            if peer_id in webrtc_peers:
+                del webrtc_peers[peer_id]
 
-    # Event handler for new tracks added from the remote peer
     @pc.on("track")
     def on_track(track):
-        # We don't need to do anything with remote tracks yet, but we log it
-        logger.info(f"Track {track.kind} received from {peer_id}")
+        logger.info(f"Track {track.kind} received from peer {peer_id}")
+        if track.kind == "video":
+            # Add the track to a local relay to be forwarded back (simple loopback/forwarding)
+            pc.addTrack(relay.subscribe(track))
 
-    # Set the remote description (the offer)
+        @track.on("ended")
+        async def on_ended():
+            logger.info(f"Track {track.kind} ended for peer {peer_id}")
+            # Note: Track ended logic for cleanup is complex, simplified here.
+
+    # Set remote description and create answer
     await pc.setRemoteDescription(offer)
-
-    # Create the answer
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
-    # Return the answer SDP
-    return web.Response(
-        content_type="application/json",
-        text=json.dumps({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}),
+    return web.json_response(
+        {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type, "peerId": peer_id}
     )
 
-async def healthcheck(request):
-    """Basic health check endpoint."""
-    return web.Response(text="OK")
-
-
 # ============================================================================
-# MAIN APPLICATION SETUP
+# MAIN SERVER LOGIC
 # ============================================================================
 
-async def main(host, port):
-    """Main entry point to start the aiohttp and websockets servers."""
+async def start_http_server(host, port):
+    """Initializes and starts the HTTP server with routes and CORS."""
     
     # Start the HTTP server to serve client.html
-    # Removed 'middlewares=[cors]' here to use the modern setup pattern
-    app = web.Application() 
+    # Initialize the app without the old middleware argument
+    app = web.Application()
 
-    # Add routes first
-    app.router.add_get("/", index)
-    app.router.add_post("/offer", offer)
-    app.router.add_get("/health", healthcheck)
-    
-    # Add static file serving for CSS and JS files
-    app.router.add_static("/dist", "./dist")
-
-    # Configure CORS using the modern aiohttp-cors setup pattern
-    cors = setup(app, defaults={
+    # Configure CORS using aiohttp_cors.setup() (FIX FOR IMPORTERROR)
+    cors = aiohttp_cors.setup(app, defaults={
+        # Allow all origins for simplicity (NOT SAFE FOR PROD!)
         "*": ResourceOptions(
             allow_credentials=True,
-            expose_headers="*",
-            allow_headers="*",
+            allow_headers=("X-Requested-With", "Content-Type", "Authorization"),
             allow_methods="*",
         )
     })
-
-    # Apply CORS to all routes
-    for route in list(app.router.routes()):
-        cors.add(route)
-        
+    
+    # Setup the routes
+    index_route = app.router.add_get("/", index)
+    offer_route = app.router.add_post("/offer", offer)
+    health_route = app.router.add_get("/health", healthcheck)
+    
+    # Apply CORS to the routes (This is necessary when using aiohttp_cors.setup)
+    cors.add(index_route)
+    cors.add(offer_route)
+    cors.add(health_route)
+    
+    # Add static file serving for CSS and JS files
+    app.router.add_static("/dist", "./dist")
+    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
     logger.info(f"HTTP server started on http://{host}:{port}")
+    return app # Return app object for potential cleanup
+
+async def main():
+    """Main entry point to start all servers."""
+    
+    # Configuration
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 8080))
+    
+    logger.info("Starting RealtimeConnect Server...")
+
+    # Start the HTTP server
+    http_app = await start_http_server(host, port)
     
     # Start WebSocket server for text chat on port+1
     ws_port = port + 1
@@ -204,16 +230,10 @@ async def main(host, port):
     # Keep the server running
     await asyncio.Event().wait()
 
-
 if __name__ == "__main__":
-    HOST = os.getenv("HOST", "0.0.0.0")
-    # For Render/Heroku/etc., PORT is usually provided as an environment variable
-    # Fallback to 8080 for local development if not provided
-    PORT = int(os.getenv("PORT", 8080))
-    
     try:
-        asyncio.run(main(HOST, PORT))
+        asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nServer shutting down gracefully.")
+        logger.info("Server shut down manually.")
     except Exception as e:
-        logger.error(f"A fatal error occurred: {e}", exc_info=True)
+        logger.error(f"Fatal server error: {e}")
