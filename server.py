@@ -13,8 +13,7 @@ import websockets
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
-# FIX 1: Import aiohttp_cors components directly
-from aiohttp_cors import cors_middleware, ResourceOptions, ALL
+from aiohttp_cors import setup, ResourceOptions, ALL # FIXED: Imported 'setup' instead of 'cors_middleware'
 
 # Configure logging for debugging purposes
 logging.basicConfig(
@@ -55,159 +54,131 @@ async def text_chat_handler(websocket, path):
             while username in text_chat_clients:
                 username = f"{original_username}#{counter}"
                 counter += 1
-            
-            await websocket.send(f"WARNING: Username {original_username} taken. Joined as {username}")
+            await websocket.send(f"WARNING: Username '{original_username}' taken. Assigned you: '{username}'")
 
         text_chat_clients[username] = websocket
-        logger.info(f"Chat client connected: {username}")
+        logger.info(f"Text chat connected: {username}. Total clients: {len(text_chat_clients)}")
         
-        # Send a welcome message to the new user and broadcast join message
-        await websocket.send(f"Welcome to the chat, {username}!")
-        await broadcast_chat_message(f"**{username}** has joined the room.")
+        # Broadcast connection message
+        await broadcast_chat_message("SYSTEM", f"{username} has joined the chat.")
         
-        # Main message loop
+        # Listen for chat messages
         async for message in websocket:
-            await broadcast_chat_message(f"**{username}**: {message}")
+            await broadcast_chat_message(username, message)
             
     except websockets.exceptions.ConnectionClosedOK:
-        logger.info(f"Chat client disconnected (normal): {username}")
+        logger.info(f"Text chat disconnected gracefully: {username}")
     except Exception as e:
-        logger.error(f"Chat client disconnected (error): {username} - {e}")
+        logger.error(f"Text chat error for {username}: {e}", exc_info=True)
     finally:
+        # Clean up client connection
         if username in text_chat_clients:
             del text_chat_clients[username]
-            # Broadcast the leave message only if they were successfully registered
-            if username:
-                 await broadcast_chat_message(f"**{username}** has left the room.")
+            logger.info(f"Text chat client removed: {username}. Remaining: {len(text_chat_clients)}")
+            asyncio.create_task(broadcast_chat_message("SYSTEM", f"{username} has left the chat."))
 
-async def broadcast_chat_message(message):
-    """Broadcasts a message to all connected chat clients."""
-    # Ensure all broadcast messages are JSON strings for consistency (though currently only text is used)
-    # This prepares for future structured message support.
-    
-    # We will send the message as a raw string for simplicity matching the client implementation.
-    disconnected_clients = []
+async def broadcast_chat_message(sender, content):
+    """Sends a chat message to all connected clients."""
+    if not text_chat_clients:
+        return
+
+    message = json.dumps({"sender": sender, "content": content})
     
     # Create a list of send tasks
-    send_tasks = []
-    for username, ws in text_chat_clients.items():
-        send_tasks.append(ws.send(message))
-
-    # Execute all send tasks concurrently
-    if send_tasks:
-        results = await asyncio.gather(*send_tasks, return_exceptions=True)
-        
-        # Check results for connection errors
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                # An error occurred (e.g., connection closed)
-                client_username = list(text_chat_clients.keys())[i]
-                disconnected_clients.append(client_username)
-                logger.warning(f"Failed to send message to {client_username}: {result}")
+    send_tasks = [client.send(message) for client in text_chat_clients.values()]
     
-    # Clean up disconnected clients
-    for username in disconnected_clients:
-        if username in text_chat_clients:
-            del text_chat_clients[username]
-            await broadcast_chat_message(f"**{username}** was disconnected.")
-            logger.info(f"Cleaned up disconnected chat client: {username}")
+    # Wait for all sends to complete, gathering exceptions
+    await asyncio.gather(*send_tasks, return_exceptions=True)
 
-# ============================================================================
-# WEBRTC HANDLERS
-# ============================================================================
+# ============================================================================\
+# WEB-RTC HANDLERS
+# ============================================================================\
 
 async def index(request):
     """Serve the main client HTML page."""
-    with open('client.html', 'r') as f:
-        return web.Response(text=f.read(), content_type='text/html')
-
-async def healthcheck(request):
-    """Basic health check endpoint."""
-    return web.Response(text="OK", content_type='text/plain')
+    # This server does not handle authentication logic, it redirects to client for now
+    with open(os.path.join(os.getcwd(), "client.html"), 'r') as f:
+        html_content = f.read()
+    return web.Response(text=html_content, content_type="text/html")
 
 async def offer(request):
-    """Handle WebRTC SDP offers."""
+    """Handle the WebRTC offer/answer negotiation."""
     params = await request.json()
-    offer = RTCSessionDescription(
-        sdp=params["sdp"],
-        type=params["type"])
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
+    # Create a new PeerConnection for the incoming offer
     pc = RTCPeerConnection()
     peer_id = str(uuid.uuid4())
     webrtc_peers[peer_id] = pc
 
-    @pc.on("iceconnectionstatechange")
-    async def on_iceconnectionstatechange():
-        logger.info(f"ICE connection state is now {pc.iceConnectionState} for peer {peer_id}")
-        if pc.iceConnectionState == "failed":
+    # Event handler for connection state changes
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        logger.info(f"PeerConnection {peer_id} state is {pc.connectionState}")
+        if pc.connectionState == "failed":
             await pc.close()
-            if peer_id in webrtc_peers:
-                del webrtc_peers[peer_id]
+            webrtc_peers.pop(peer_id, None)
+        elif pc.connectionState == "closed":
+            webrtc_peers.pop(peer_id, None)
+            logger.info(f"PeerConnection {peer_id} removed.")
 
+    # Event handler for new tracks added from the remote peer
     @pc.on("track")
     def on_track(track):
-        logger.info(f"Track {track.kind} received for peer {peer_id}")
-        
-        # Handle media tracks here if you intend to process or re-stream them.
-        # For a simple mesh call, this is where you might relay the tracks
-        # or just acknowledge them.
+        # We don't need to do anything with remote tracks yet, but we log it
+        logger.info(f"Track {track.kind} received from {peer_id}")
 
-        if track.kind == "audio":
-            # For audio, you might not do anything specific here for a simple conference
-            pass
-        elif track.kind == "video":
-            # For video, you might relay it if you were building an SFU/MCU, 
-            # but for a simple mesh, the client handles it.
-            pass
-
-        @track.on("ended")
-        async def on_ended():
-            logger.info(f"Track {track.kind} ended for peer {peer_id}")
-            # Clean up logic for track end
-    
-    # Set the remote offer and create an answer
+    # Set the remote description (the offer)
     await pc.setRemoteDescription(offer)
+
+    # Create the answer
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
+    # Return the answer SDP
     return web.Response(
         content_type="application/json",
-        text=json.dumps({
-            "sdp": pc.localDescription.sdp,
-            "type": pc.localDescription.type,
-            "peer_id": peer_id
-        }),
+        text=json.dumps({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}),
     )
 
-async def setup_server(host, port):
-    """Set up the aiohttp HTTP and websockets chat server."""
-    
-    # FIX 2: Correct usage of cors_middleware by calling it directly.
-    # We define the CORS settings here. Since no specific origins are configured,
-    # we allow all origins for development/testing, but this should be restricted
-    # in a real production environment.
-    cors = cors_middleware(
-        defaults={
-            # Allow all origins (replace with specific origins for production)
-            "*": ResourceOptions(
-                allow_headers=("*",),
-                allow_methods=("GET", "POST", "OPTIONS"),
-                allow_credentials=True,
-                max_age=3600
-            )
-        }
-    )
+async def healthcheck(request):
+    """Basic health check endpoint."""
+    return web.Response(text="OK")
+
+
+# ============================================================================
+# MAIN APPLICATION SETUP
+# ============================================================================
+
+async def main(host, port):
+    """Main entry point to start the aiohttp and websockets servers."""
     
     # Start the HTTP server to serve client.html
-    app = web.Application(middlewares=[cors])
+    # Removed 'middlewares=[cors]' here to use the modern setup pattern
+    app = web.Application() 
+
+    # Add routes first
     app.router.add_get("/", index)
     app.router.add_post("/offer", offer)
     app.router.add_get("/health", healthcheck)
     
     # Add static file serving for CSS and JS files
     app.router.add_static("/dist", "./dist")
-    app.router.add_static("/", ".") # Serve root static files like script.js
 
+    # Configure CORS using the modern aiohttp-cors setup pattern
+    cors = setup(app, defaults={
+        "*": ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+            allow_methods="*",
+        )
+    })
+
+    # Apply CORS to all routes
+    for route in list(app.router.routes()):
+        cors.add(route)
+        
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
@@ -235,40 +206,14 @@ async def setup_server(host, port):
 
 
 if __name__ == "__main__":
-    # Load environment variables (like PORT)
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    # Determine host and port from environment or use defaults
-    host = os.environ.get("HOST", "0.0.0.0")
-    # For Render, the server must bind to the port defined by the PORT environment variable
-    # We default to 8080 if not found, but Render will set this automatically.
-    port_str = os.environ.get("PORT", "8080") 
+    HOST = os.getenv("HOST", "0.0.0.0")
+    # For Render/Heroku/etc., PORT is usually provided as an environment variable
+    # Fallback to 8080 for local development if not provided
+    PORT = int(os.getenv("PORT", 8080))
     
     try:
-        port = int(port_str)
-    except ValueError:
-        logger.error(f"Invalid PORT environment variable: {port_str}. Using default 8080.")
-        port = 8080
-    
-    # Check for a SECRET_KEY for production use
-    if os.environ.get("SECRET_KEY") is None:
-        logger.warning("SECRET_KEY not found in .env. Generating one-time key. SET SECRET_KEY for production!")
-        # Generate a random 32-byte key
-        os.environ["SECRET_KEY"] = uuid.uuid4().hex
-
-    try:
-        # Check if the server is running in a Render environment
-        if os.environ.get("RENDER"):
-            # Render needs the server to be non-blocking on start and rely on the platform
-            logger.info("Running in Render environment. Using provided PORT.")
-
-        # The chat WebSocket port will be port + 1, assuming the environment allows this.
-        # In single-port environments like Render, this may require specific configuration 
-        # or a separate service, but for local testing, this is fine.
-        asyncio.run(setup_server(host, port))
-
+        asyncio.run(main(HOST, PORT))
     except KeyboardInterrupt:
-        logger.info("Server stopped by user (Ctrl+C)")
+        print("\nServer shutting down gracefully.")
     except Exception as e:
-        logger.exception(f"An unexpected error occurred: {e}")
+        logger.error(f"A fatal error occurred: {e}", exc_info=True)
