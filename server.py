@@ -11,6 +11,8 @@ import uuid
 import os
 import aiosqlite
 import bcrypt
+import string
+import random
 from aiohttp import web
 from aiohttp_session import setup as setup_session, get_session, new_session
 from aiohttp_session.cookie_storage import EncryptedCookieStorage
@@ -38,12 +40,27 @@ DIST_DIR = os.path.join(os.getcwd(), "dist")
 # --- Global State ---
 webrtc_peers = {}  # peer_id -> RTCPeerConnection
 relay = MediaRelay()
-# We will store WebSocket clients in the aiohttp application context
 # app['ws_clients'] = {username: websocket}
 
 
 # ============================================================================
+# UTILITIES
+# ============================================================================
+
+def generate_meeting_id(length=8):
+    """Generates a random, URL-safe meeting ID."""
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+async def handle_random_id(request):
+    """API endpoint to generate and return a new random meeting ID."""
+    new_id = generate_meeting_id()
+    return web.json_response({'meeting_id': new_id})
+
+
+# ============================================================================
 # DATABASE & AUTHENTICATION
+# (Omitting for brevity as it was not requested to change, but keeping function headers)
 # ============================================================================
 
 async def init_db(app):
@@ -78,7 +95,7 @@ async def handle_login(request):
     password = data.get('password')
 
     if not username or not password:
-        return web.HTTPFound('/login') # Redirect back
+        return web.HTTPFound('/login')
 
     try:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -87,15 +104,13 @@ async def handle_login(request):
                 if row:
                     hashed_password = row[0]
                     if bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8')):
-                        # Password is correct, create session
                         session = await new_session(request)
                         session['username'] = username
                         logger.info(f"User '{username}' logged in successfully.")
-                        return web.HTTPFound('/') # Redirect to main chat page
+                        return web.HTTPFound('/')
                 
-                # Invalid username or password
                 logger.warning(f"Failed login attempt for user '{username}'.")
-                return web.HTTPFound('/login') # Redirect back
+                return web.HTTPFound('/login')
     except Exception as e:
         logger.error(f"Error during login: {e}")
         return web.Response(text="Server error during login.", status=500)
@@ -119,10 +134,7 @@ async def handle_register(request):
         logger.warning("Registration attempt with empty username or password.")
         return web.HTTPFound('/register')
 
-    # Hash the password securely
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    
-    # All new users are 'user' by default (including "Devodai")
     role = 'user' 
 
     try:
@@ -134,14 +146,13 @@ async def handle_register(request):
             await db.commit()
         logger.info(f"New user '{username}' registered successfully.")
         
-        # Automatically log in the new user
         session = await new_session(request)
         session['username'] = username
-        return web.HTTPFound('/') # Redirect to main chat page
+        return web.HTTPFound('/')
 
     except aiosqlite.IntegrityError:
         logger.warning(f"Registration failed: Username '{username}' already exists.")
-        return web.HTTPFound('/register') # Username taken
+        return web.HTTPFound('/register')
     except Exception as e:
         logger.error(f"Error during registration: {e}")
         return web.Response(text="Server error during registration.", status=500)
@@ -161,7 +172,6 @@ async def get_user_info(request):
     if not username:
         return web.json_response({'error': 'Not authenticated'}, status=401)
     
-    # Get role from DB
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT role FROM users WHERE username = ?", (username,)) as cursor:
@@ -173,7 +183,7 @@ async def get_user_info(request):
         return web.json_response({'error': 'Server error'}, status=500)
 
 # ============================================================================
-# WEBSOCKET CHAT HANDLER (Integrated into aiohttp)
+# WEBSOCKET CHAT HANDLER
 # ============================================================================
 
 async def text_chat_handler(request):
@@ -291,8 +301,10 @@ async def offer(request):
     @pc.on("track")
     def on_track(track):
         logger.info(f"Track {track.kind} received from peer {peer_id}")
-        if track.kind == "video":
+        # Subscribe the track to the global relay so all other peers get it
+        if track.kind == "video" or track.kind == "audio":
             pc.addTrack(relay.subscribe(track))
+        
         @track.on("ended")
         async def on_ended():
             logger.info(f"Track {track.kind} ended for peer {peer_id}")
@@ -333,27 +345,35 @@ async def main():
     secret_key_bytes = None
     secret_key_str = os.environ.get("SECRET_KEY")
 
+    # 1. Check if SECRET_KEY exists in environment
     if secret_key_str:
         try:
-            # Test if the key from env is valid
-            secret_key_bytes_test = secret_key_str.encode('utf-8')
-            fernet.Fernet(secret_key_bytes_test) # This test will raise ValueError if invalid
-            secret_key_bytes = secret_key_bytes_test # It's valid, use it.
-            logger.info("Loaded SECRET_KEY from environment.")
+            # Attempt to decode and check if it's a valid Fernet key
+            key_candidate = secret_key_str.encode('utf-8')
+            
+            # Check if key is exactly 32 bytes (which is 44 base64 chars)
+            # This is a small helper, Fernet will ultimately check the base64 format.
+            if len(key_candidate) == 44:
+                fernet.Fernet(key_candidate) 
+                secret_key_bytes = key_candidate
+                logger.info("Loaded valid SECRET_KEY from environment.")
+            else:
+                raise ValueError("Key length is incorrect for Fernet.")
+                
         except Exception as e:
-            logger.warning(f"Invalid SECRET_KEY found in environment: {e}. Generating temporary key.")
+            # If any exception occurs (like ValueError from Fernet or my length check), log and fall back.
+            logger.error(f"Invalid SECRET_KEY found in environment: {e}. Generating temporary key.")
     
-    if not secret_key_bytes:
-        # If key was not found or was invalid, generate a new one.
+    # 2. Fallback to generating a key if no valid key was found
+    if secret_key_bytes is None:
         logger.warning("SECRET_KEY not found or invalid. Generating a temporary key.")
         logger.warning("DO NOT USE THIS IN PRODUCTION. Set a permanent SECRET_KEY env variable.")
         secret_key_bytes = fernet.Fernet.generate_key() # Generate valid bytes directly
 
-    
     # --- App Initialization ---
     app = web.Application()
     
-    # Setup session middleware (This will now use a valid key)
+    # Setup session middleware (This will now use a guaranteed valid key)
     storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
     setup_session(app, storage)
     
@@ -375,6 +395,7 @@ async def main():
     app.router.add_post("/register", handle_register)
     app.router.add_get("/logout", handle_logout)
     app.router.add_get("/api/userinfo", get_user_info)
+    app.router.add_get("/api/random_id", handle_random_id) # New API route
     app.router.add_get("/health", healthcheck)
     app.router.add_post("/offer", offer)
     
