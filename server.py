@@ -46,15 +46,35 @@ relay = MediaRelay()
 # UTILITIES
 # ============================================================================
 
-def generate_meeting_id(length=8):
-    """Generates a random, URL-safe meeting ID."""
-    characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for _ in range(length))
+def generate_binary_code(num_chars, bits_per_char=8):
+    """Generates a random binary string, grouped for readability."""
+    binary_string = ""
+    for _ in range(num_chars):
+        char_binary = ''.join(random.choice('01') for _ in range(bits_per_char))
+        binary_string += char_binary + " "  # Grouping with a space
+    return binary_string.strip()
+
+def binary_to_alphabet(binary_code):
+    """Converts a grouped binary string to an alphabet-based message using ASCII."""
+    decoded_message = ""
+    binary_groups = binary_code.split()
+    for group in binary_groups:
+        try:
+            decimal_value = int(group, 2)
+            # We only want URL-safe characters for an ID
+            if 48 <= decimal_value <= 57 or 65 <= decimal_value <= 90 or 97 <= decimal_value <= 122:
+                decoded_message += chr(decimal_value)
+            else:
+                decoded_message += random.choice(string.ascii_letters + string.digits) # Fallback
+        except ValueError:
+            decoded_message += "?"  # Handle invalid binary groups
+    return decoded_message
 
 async def handle_random_id(request):
     """API endpoint to generate and return a new random meeting ID."""
-    new_id = generate_meeting_id()
-    return web.json_response({'meeting_id': new_id})
+    random_binary = generate_binary_code(8) # 8-character random ID
+    decoded_id = binary_to_alphabet(random_binary)
+    return web.json_response({'meeting_id': decoded_id})
 
 # ============================================================================
 # DATABASE & AUTHENTICATION
@@ -381,30 +401,33 @@ async def on_cleanup(app):
 async def main():
     """Main entry point to start the single aiohttp server."""
     
-    # --- Secret Key Setup (FIXED) ---
+    # --- Secret Key Setup (ROBUST FIX) ---
     secret_key_str = os.environ.get("SECRET_KEY")
-    secret_key_bytes = None
+    storage = None
 
     if secret_key_str:
         try:
-            # Key from env MUST be 44 chars (32 bytes encoded)
-            key_from_env = secret_key_str.encode('utf-8')
-            Fernet(key_from_env)  # This will raise ValueError if invalid
-            secret_key_bytes = key_from_env
-            logger.info("Loaded valid SECRET_KEY from environment.")
+            # Try to use the key from the environment
+            key_from_env_bytes = secret_key_str.encode('utf-8')
+            # This is the validation: try to initialize EncryptedCookieStorage directly.
+            # This will fail if the key is not 32-byte base64-encoded.
+            storage = EncryptedCookieStorage(key_from_env_bytes, cookie_name='session_id')
+            logger.info("Loaded valid SECRET_KEY and initialized storage.")
         except (ValueError, TypeError) as e:
+            # This block will catch the "Fernet key must be..." error
             logger.error(f"Invalid SECRET_KEY in environment: {e}. Generating temporary key.")
     
-    if not secret_key_bytes:
+    if not storage:
+        # Fallback if key is missing OR was invalid
         logger.warning("SECRET_KEY not found or invalid. Generating a temporary key for this session.")
         logger.warning("DO NOT USE THIS IN PRODUCTION. Set a permanent SECRET_KEY env variable.")
         secret_key_bytes = Fernet.generate_key() # This returns valid bytes
+        storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
 
     # --- App Initialization ---
     app = web.Application()
     
     # Setup session middleware
-    storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
     setup_session(app, storage)
     
     # Setup CORS
@@ -425,7 +448,7 @@ async def main():
     app.router.add_post("/register", handle_register)
     app.router.add_get("/logout", handle_logout)
     app.router.add_get("/api/userinfo", get_user_info)
-    app.router.add_get("/api/random_id", handle_random_id)
+    app.router.add_get("/api/random_id", handle_random_id) # Added random ID route
     app.router.add_get("/health", healthcheck)
     app.router.add_post("/offer", offer)
     
