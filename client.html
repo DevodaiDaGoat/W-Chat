@@ -365,47 +365,10 @@
         
         /** Gets the correct WebSocket URL (ws:// or wss://) */
         function getWsUrl() {
+            // FIX: The server is now a single application.
+            // The WS is served on the same host/port at the /ws path.
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            // Use port + 1 for local dev, or standard port for production
-            let wsPort = '';
-            if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                // Assumes HTTP is on 8080, so WS is on 8081 as per server.py
-                 wsPort = `:${parseInt(window.location.port || '8080') + 1}`;
-            }
-            // For production (like onrender.com), ws/wss runs on the same port as http/https
-            // and is handled by the server or a proxy. The server.py runs WS on port+1,
-            // so this logic is for local dev. Render will proxy requests.
-            
-            // *** SIMPLIFIED LOGIC for Render/Production ***
-            // Render proxies /ws to the correct internal port if set up.
-            // But server.py explicitly starts it on port+1.
-            // This is a common point of failure.
-            
-            // Let's assume Render is on 8080 (http) and 8081 (ws)
-            if (window.location.hostname === 'localhost') {
-                 const httpPort = parseInt(window.location.port || '8080');
-                 return `${protocol}//${window.location.hostname}:${httpPort + 1}`;
-            } else {
-                 // On production, Render might not expose port 8081.
-                 // This assumes the separate WebSocket server is accessible.
-                 // A better production setup would be to handle /ws on the *same port*
-                 // using aiohttp-websockets, but server.py uses two ports.
-                 // We will try port 8081 (or 443 + 1 -> 444?)
-                 // This is complex. Let's try to connect to the *same host* but port 8081
-                 
-                 // Fallback for Render: Assume it exposes 8080 and 8081.
-                 // This won't work if Render only exposes one port (80/443).
-                 
-                 // *** REVISED LOGIC FOR server.py STRUCTURE ***
-                 // server.py runs HTTP on PORT (e.g., 8080)
-                 // server.py runs WS on PORT + 1 (e.g., 8081)
-                 // This will FAIL on Render, which only exposes ONE port.
-                 
-                 // *** FINAL ATTEMPT - This requires the server.py to be fixed to use ONE port ***
-                 // Since I provided a server.py that uses ONE port (handling /ws via aiohttp),
-                 // this logic should be correct.
-                 return `${protocol}//${window.location.host}/ws`;
-            }
+            return `${protocol}//${window.location.host}/ws`;
         }
 
 
