@@ -43,7 +43,7 @@ relay = MediaRelay()
 
 
 # ============================================================================
-# UTILITIES
+# UTILITIES (Includes user's requested functions)
 # ============================================================================
 
 def generate_binary_code(num_chars, bits_per_char=8):
@@ -61,19 +61,22 @@ def binary_to_alphabet(binary_code):
     for group in binary_groups:
         try:
             decimal_value = int(group, 2)
-            # We only want URL-safe characters for an ID
+            # We only want URL-safe characters for an ID (alphanumeric)
             if 48 <= decimal_value <= 57 or 65 <= decimal_value <= 90 or 97 <= decimal_value <= 122:
                 decoded_message += chr(decimal_value)
             else:
-                decoded_message += random.choice(string.ascii_letters + string.digits) # Fallback
+                # If the random byte isn't alphanumeric, pick one that is
+                decoded_message += random.choice(string.ascii_letters + string.digits)
         except ValueError:
-            decoded_message += "?"  # Handle invalid binary groups
+            decoded_message += random.choice(string.ascii_letters + string.digits) # Fallback
     return decoded_message
 
 async def handle_random_id(request):
     """API endpoint to generate and return a new random meeting ID."""
-    random_binary = generate_binary_code(8) # 8-character random ID
+    # Generate a 6-character random ID using the user's functions
+    random_binary = generate_binary_code(6) 
     decoded_id = binary_to_alphabet(random_binary)
+    logger.info(f"Generated random meeting ID: {decoded_id}")
     return web.json_response({'meeting_id': decoded_id})
 
 # ============================================================================
@@ -195,7 +198,7 @@ async def handle_register_page(request):
             return web.Response(text=f.read(), content_type="text/html")
     except FileNotFoundError:
         logger.error("register.html not found!")
-        return web.Response(text="Registration page not found.", status=44)
+        return web.Response(text="Registration page not found.", status=404) # Fixed 44 to 404
 
 async def handle_register(request):
     """Handles the POST request from the registration form."""
@@ -404,25 +407,28 @@ async def main():
     # --- Secret Key Setup (ROBUST FIX) ---
     secret_key_str = os.environ.get("SECRET_KEY")
     storage = None
+    secret_key_bytes = None
 
     if secret_key_str:
         try:
             # Try to use the key from the environment
             key_from_env_bytes = secret_key_str.encode('utf-8')
-            # This is the validation: try to initialize EncryptedCookieStorage directly.
-            # This will fail if the key is not 32-byte base64-encoded.
-            storage = EncryptedCookieStorage(key_from_env_bytes, cookie_name='session_id')
-            logger.info("Loaded valid SECRET_KEY and initialized storage.")
+            # This is the validation: try to initialize Fernet directly.
+            Fernet(key_from_env_bytes) # This will raise ValueError if invalid
+            secret_key_bytes = key_from_env_bytes
+            logger.info("Loaded valid SECRET_KEY from environment.")
         except (ValueError, TypeError) as e:
             # This block will catch the "Fernet key must be..." error
             logger.error(f"Invalid SECRET_KEY in environment: {e}. Generating temporary key.")
     
-    if not storage:
+    if not secret_key_bytes:
         # Fallback if key is missing OR was invalid
         logger.warning("SECRET_KEY not found or invalid. Generating a temporary key for this session.")
         logger.warning("DO NOT USE THIS IN PRODUCTION. Set a permanent SECRET_KEY env variable.")
         secret_key_bytes = Fernet.generate_key() # This returns valid bytes
-        storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
+
+    # This line will now only be reached with a guaranteed valid key (bytes)
+    storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
 
     # --- App Initialization ---
     app = web.Application()

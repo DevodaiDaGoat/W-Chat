@@ -530,7 +530,7 @@
             const remoteDesc = new RTCSessionDescription(data);
             await pc.setRemoteDescription(remoteDesc);
             
-            const peerId = data.peerId; // Using peerId from server response
+            const peerId = data.id; // Using peerId from server response
             peerConnections[peerId] = pc;
             console.log(`WebRTC Peer Connection established. Peer ID: ${peerId}`);
         }
@@ -672,6 +672,7 @@
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
             try {
                 const response = await fetch('/api/random_id');
+                if (!response.ok) throw new Error('Failed to fetch');
                 const data = await response.json();
                 meetingIdInput.value = data.meeting_id;
             } catch (e) {
