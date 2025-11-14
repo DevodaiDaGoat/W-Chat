@@ -2,7 +2,7 @@
 """
 Fixed RealtimeConnect Server
 Combines WebRTC video/audio/screen sharing with text chat functionality.
-Adds robust session management and placeholder authentication routes.
+Adds robust session management, authentication, and random ID generation.
 """
 
 import asyncio
@@ -13,10 +13,12 @@ import os
 import websockets
 import aiosqlite
 import bcrypt
+import random
+import string
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
-from aiohttp_session import setup as setup_session, get_session
+from aiohttp_session import setup as setup_session, get_session, new_session
 from aiohttp_session.cookie_storage import EncryptedCookieStorage
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -29,13 +31,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Text Chat specific variables ---
-# Maps username to the active WebSocket connection for chat
 text_chat_clients = {}  
 
 # --- WebRTC specific variables ---
-# Maps peer_id (UUID) to the active RTCPeerConnection
 webrtc_peers = {}  
-# MediaRelay handles stream synchronization for screen sharing
 relay = MediaRelay()
 
 # --- Database and Auth ---
@@ -64,7 +63,6 @@ async def get_user_by_username(db, username):
 
 async def create_user(db, username, password):
     """Creates a new user with a hashed password."""
-    # Hash the password
     salt = bcrypt.gensalt()
     password_hash = bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
     
@@ -91,9 +89,7 @@ async def requires_auth(request):
     """A simple decorator/check for authenticated access."""
     session = await get_session(request)
     if 'user_id' not in session:
-        # Redirect to login page if not authenticated
         raise web.HTTPFound('/login')
-    # Store the username in the request object for easy access
     request['username'] = session.get('username')
     return True
 
@@ -104,7 +100,6 @@ async def requires_auth(request):
 async def index(request):
     """Serves the main meeting client page if authenticated."""
     await requires_auth(request)
-    # Read and return the client.html file
     with open("client.html", "r") as f:
         return web.Response(text=f.read(), content_type="text/html")
 
@@ -132,10 +127,8 @@ async def handle_login(request):
         session['user_id'] = user_data[0]
         session['username'] = user_data[1]
         logger.info(f"User logged in: {username}")
-        # Redirect to the main application page
         raise web.HTTPFound('/')
     else:
-        # Simple redirect back to login on failure (in a real app, use flash messages)
         raise web.HTTPFound('/login?error=1')
 
 async def handle_register(request):
@@ -150,14 +143,12 @@ async def handle_register(request):
         raise web.HTTPFound('/register?error=1')
         
     if await create_user(db, username, password):
-        # Auto-login after successful registration
         user_data = await get_user_by_username(db, username)
         session = await get_session(request)
         session['user_id'] = user_data[0]
         session['username'] = user_data[1]
         raise web.HTTPFound('/')
     else:
-        # Username already exists
         raise web.HTTPFound('/register?error=2')
     
 async def handle_logout(request):
@@ -168,6 +159,14 @@ async def handle_logout(request):
     logger.info(f"User logged out: {username}")
     raise web.HTTPFound('/login')
 
+async def handle_random_id(request):
+    """API endpoint to generate and return a new random meeting ID."""
+    """Generates a random, 8-character alphanumeric meeting ID."""
+    characters = string.ascii_letters + string.digits
+    new_id = ''.join(random.choice(characters) for i in range(8))
+    logger.info(f"Generated new random meeting ID: {new_id}")
+    return web.json_response({'meeting_id': new_id})
+
 async def offer(request):
     """Handles WebRTC signalling for offer/answer exchange."""
     await requires_auth(request)
@@ -175,16 +174,9 @@ async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-    # Create a new peer connection for this client
     pc = RTCPeerConnection()
     peer_id = str(uuid.uuid4())
     webrtc_peers[peer_id] = pc
-    
-    # Store peer ID and username in the session (optional, for tracking)
-    # session = await get_session(request)
-    # logger.info(f"New WebRTC connection for user {session.get('username')}, Peer ID: {peer_id}")
-
-    # Set up data channel and event handlers... (omitted for brevity)
     
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
@@ -192,11 +184,8 @@ async def offer(request):
             await pc.close()
             webrtc_peers.pop(peer_id, None)
 
-    # Handle remote track from the client (e.g., their mic/camera)
     @pc.on("track")
     def on_track(track):
-        # We don't need to relay every track, but if you want to forward 
-        # streams to other peers, this is where you'd handle it.
         logger.info(f"Track {track.kind} received.")
         
     await pc.setRemoteDescription(offer)
@@ -212,17 +201,14 @@ async def healthcheck(request):
     return web.Response(text="OK")
 
 # ============================================================================
-# TEXT CHAT HANDLERS
+# TEXT CHAT HANDLERS (WEBSOCKETS)
 # ============================================================================
 
 async def text_chat_handler(websocket, path):
     """Handles WebSocket connections for text chat."""
-    # NOTE: This WebSocket is separate from the HTTP session. 
-    # The client is responsible for sending auth/username info in the first message.
     username = None
     
     try:
-        # First message should be username (sent by client.html)
         username = await websocket.recv()
         if not username or username.strip() == "":
             await websocket.send(json.dumps({"type": "error", "message": "Username cannot be empty"}))
@@ -231,7 +217,6 @@ async def text_chat_handler(websocket, path):
             
         username = username.strip()
         
-        # Check for duplicate username and adjust if necessary
         original_username = username
         counter = 1
         while username in text_chat_clients:
@@ -241,13 +226,10 @@ async def text_chat_handler(websocket, path):
         text_chat_clients[username] = websocket
         logger.info(f"Chat client connected: {username}. Total clients: {len(text_chat_clients)}")
 
-        # Broadcast join message
         await broadcast_message(f"{username} has joined the room.")
 
-        # Main loop to receive messages
         async for message in websocket:
             try:
-                # Assuming simple text message
                 if isinstance(message, str):
                     await broadcast_message(message, sender=username)
             except Exception as e:
@@ -261,13 +243,18 @@ async def text_chat_handler(websocket, path):
         if username and username in text_chat_clients:
             del text_chat_clients[username]
             logger.info(f"Chat client removed: {username}. Remaining clients: {len(text_chat_clients)}")
-            # Broadcast leave message
+            
+            # Determine the correct name to broadcast leave message
+            broadcast_name = username
             if username != original_username and username.startswith(original_username):
-                # Only broadcast for the adjusted name if it was adjusted
-                await broadcast_message(f"{username} has left the room.")
+                # This was a duplicate connection, use the duplicate name
+                broadcast_name = username
             elif username == original_username:
-                 await broadcast_message(f"{username} has left the room.")
-            # Ensure all peers are cleaned up (though WebRTC is handled separately)
+                 # This was the original connection
+                 broadcast_name = original_username
+            
+            await broadcast_message(f"{broadcast_name} has left the room.")
+
 
 async def broadcast_message(message, sender="System"):
     """Sends a chat message to all connected clients."""
@@ -276,9 +263,7 @@ async def broadcast_message(message, sender="System"):
         "sender": sender,
         "content": message
     })
-    # Gather all send tasks
     send_tasks = [client.send(chat_payload) for client in text_chat_clients.values()]
-    # Run all sends concurrently
     if send_tasks:
         await asyncio.gather(*send_tasks, return_exceptions=True)
 
@@ -288,7 +273,6 @@ async def broadcast_message(message, sender="System"):
 
 async def on_shutdown(app):
     """Cleanup all peer connections on server shutdown."""
-    # Close all WebRTC peers
     coros = [pc.close() for pc in webrtc_peers.values()]
     if coros:
         await asyncio.gather(*coros)
@@ -297,7 +281,6 @@ async def on_shutdown(app):
 
 async def main():
     """Main entry point for the server."""
-    # Load environment variables from .env file (for local development)
     load_dotenv()
     
     host = os.environ.get("HOST", "0.0.0.0")
@@ -305,31 +288,28 @@ async def main():
     
     await db_init()
 
-    # --- Session Secret Key Setup (Fixes Fernet ValueError) ---
-    secret_key = os.environ.get("SECRET_KEY")
+    # --- Session Secret Key Setup (REFACTORED LOGIC) ---
+    secret_key_str = os.environ.get("SECRET_KEY")
     secret_key_bytes = None
-    
-    # 1. Attempt to load and validate the key
-    if secret_key:
-        try:
-            # Fernet requires the key to be 32 URL-safe base64-encoded bytes.
-            # Convert the string to bytes for validation.
-            secret_key_bytes = secret_key.encode('utf-8')
-            # Validation check - this will raise ValueError if invalid
-            Fernet(secret_key_bytes)
-            logger.info("Loaded valid SECRET_KEY from environment.")
-        except ValueError:
-            logger.error("Environment SECRET_KEY is invalid for Fernet. Generating a temporary key.")
-            secret_key_bytes = Fernet.generate_key()
-            logger.warning(f"TEMPORARY SECRET_KEY: {secret_key_bytes.decode('utf-8')}")
-            logger.warning("!!! ACTION REQUIRED: Please use this new key to update your environment/config. Session integrity will be lost on server restart. !!!")
-    else:
-        # 2. Generate key if not present (Development/Testing fallback)
-        secret_key_bytes = Fernet.generate_key()
-        logger.warning(f"SECRET_KEY not found in environment. Generated temporary key: {secret_key_bytes.decode('utf-8')}")
-        logger.warning("!!! ACTION REQUIRED: Please use this new key to update your environment/config. Session integrity will be lost on server restart. !!!")
 
-    # Use the validated/generated key for EncryptedCookieStorage
+    if secret_key_str:
+        try:
+            # Attempt to use the key from the environment
+            key_from_env = secret_key_str.encode('utf-8')
+            Fernet(key_from_env)  # Validate the key
+            secret_key_bytes = key_from_env
+            logger.info("Loaded valid SECRET_KEY from environment.")
+        except (ValueError, TypeError) as e:
+            # Key is invalid, log error and fall back to generating one
+            logger.error(f"Invalid SECRET_KEY in environment: {e}. Generating a temporary key.")
+    
+    if not secret_key_bytes:
+        # Fallback if key is missing or invalid
+        logger.warning("SECRET_KEY not found or invalid. Generating a temporary key.")
+        logger.warning("DO NOT USE THIS IN PRODUCTION. Set a permanent SECRET_KEY env variable.")
+        secret_key_bytes = Fernet.generate_key() # This returns valid bytes
+
+    # This line will now only be reached with a guaranteed valid key (bytes)
     storage = EncryptedCookieStorage(secret_key_bytes, cookie_name='session_id')
 
     # Setup aiohttp app
@@ -361,6 +341,8 @@ async def main():
     app.router.add_post("/register", handle_register)
     app.router.add_get("/logout", handle_logout)
     
+    app.router.add_get("/api/random_id", handle_random_id) # New route for random ID
+    
     app.router.add_post("/offer", offer)
     app.router.add_get("/health", healthcheck)
     
@@ -389,16 +371,13 @@ async def main():
     )
     logger.info(f"WebSocket server for text chat started on ws://{host}:{ws_port}")
     
-    # Print connection info
     logger.info(f"Server is ready. Access locally at:")
     logger.info(f"- HTTP: http://localhost:{port}")
     logger.info(f"- WebSocket: ws://localhost:{ws_port}")
     
-    # Keep the server running
     try:
         await asyncio.Event().wait()
     finally:
-        # Close database connection on exit
         await app['db'].close()
 
 if __name__ == "__main__":
@@ -408,5 +387,4 @@ if __name__ == "__main__":
         logger.info("Server stopped by user.")
     except Exception as e:
         logger.critical(f"Fatal server error: {e}", exc_info=True)
-        # Re-raise the exception for the deployment environment to capture
         raise

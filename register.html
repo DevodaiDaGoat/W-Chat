@@ -2,24 +2,83 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Register - RealtimeConnect</title>
   <style>
-    body{font-family:Arial;background:#2f3136;color:#dcdfe4;display:flex;align-items:center;justify-content:center;height:100vh}
-    .card{background:#23272a;padding:24px;border-radius:8px;width:320px}
-    input{width:100%;padding:10px;margin-bottom:10px;border-radius:4px;border:1px solid #444;background:#2f3136;color:#dcdfe4}
-    button{width:100%;padding:10px;background:#7289da;border:none;border-radius:4px;color:#fff}
-    a{color:#9fb0ff}
+    /* Minimal custom dark theme styles */
+    body{
+      font-family: Arial, sans-serif;
+      background:#2f3136;
+      color:#dcdfe4;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      height:100vh;
+      margin: 0;
+    }
+    .card{
+      background:#23272a;
+      padding: 32px;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+    h2 {
+      text-align: center;
+      color: #7289da;
+      margin-bottom: 20px;
+      font-size: 1.5rem;
+    }
+    input{
+      width:100%;
+      padding:12px;
+      margin-bottom:15px;
+      border-radius:6px;
+      border:1px solid #444;
+      background:#2f3136;
+      color:#dcdfe4;
+      box-sizing: border-box;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      border-color: #7289da;
+      outline: none;
+    }
+    button{
+      width:100%;
+      padding:12px;
+      background:#7289da;
+      border:none;
+      border-radius:6px;
+      color:#fff;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    button:hover{
+      background:#677bc4;
+    }
+    a{
+      color:#9fb0ff;
+      text-decoration: none;
+    }
+    a:hover {
+        text-decoration: underline;
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>Register</h2>
+    <h2>Create Account</h2>
     <form method="post" action="/register">
-      <input name="username" placeholder="Choose a username" />
-      <input type="password" name="password" placeholder="Choose a password" />
-      <button type="submit">Create account</button>
+      <input name="username" placeholder="Choose a username" required />
+      <input type="password" name="password" placeholder="Choose a secure password" required />
+      <button type="submit">Register and Join</button>
     </form>
-    <p style="margin-top:12px">Already have an account? <a href="/login">Login</a></p>
+    <p style="text-align:center; margin-top:20px; font-size: 0.9rem;">
+        Already have an account? <a href="/login">Login</a>
+    </p>
   </div>
 </body>
 </html>

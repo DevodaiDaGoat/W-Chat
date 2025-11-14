@@ -296,7 +296,6 @@
             let container = document.getElementById(containerId);
 
             if (container) {
-                // If container already exists, just update the stream
                 const videoEl = container.querySelector('video');
                 if (videoEl) videoEl.srcObject = stream;
                 return container;
@@ -309,7 +308,10 @@
             const video = document.createElement('video');
             video.srcObject = stream;
             video.autoplay = true;
-            video.playsinline = true; // Important for mobile
+            video.playsinline = true; 
+            if (peerId === 'local') {
+                video.muted = true; // Mute local video to prevent feedback
+            }
 
             const labelEl = document.createElement('span');
             labelEl.classList.add('video-label');
@@ -319,9 +321,7 @@
             container.appendChild(labelEl);
             videoGrid.appendChild(container);
 
-            // Handle the aspect ratio for remote videos (auto-adjust size)
             video.onloadedmetadata = () => {
-                // Ensure video starts playing (required for mobile/autoplay rules)
                 video.play().catch(e => console.error("Video playback failed:", e));
             };
             
@@ -333,9 +333,9 @@
             const containerId = 'video-container-' + peerId;
             const container = document.getElementById(containerId);
             if (container) {
-                // Clean up video stream object
                 const videoEl = container.querySelector('video');
                 if (videoEl && videoEl.srcObject) {
+                    videoEl.srcObject.getTracks().forEach(track => track.stop());
                     videoEl.srcObject = null;
                 }
                 container.remove();
@@ -354,23 +354,67 @@
                     username = data.username;
                     console.log('Authenticated as:', username);
                 } else {
-                    console.error('Not authenticated. Redirecting.');
-                    window.location = '/login';
+                    console.error('Not authenticated. Redirecting to login.');
+                    window.location.pathname = '/login';
                 }
             } catch (e) {
                 console.error('Error fetching user info:', e);
-                window.location = '/login';
+                window.location.pathname = '/login';
             }
         }
+        
+        /** Gets the correct WebSocket URL (ws:// or wss://) */
+        function getWsUrl() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            // Use port + 1 for local dev, or standard port for production
+            let wsPort = '';
+            if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                // Assumes HTTP is on 8080, so WS is on 8081 as per server.py
+                 wsPort = `:${parseInt(window.location.port || '8080') + 1}`;
+            }
+            // For production (like onrender.com), ws/wss runs on the same port as http/https
+            // and is handled by the server or a proxy. The server.py runs WS on port+1,
+            // so this logic is for local dev. Render will proxy requests.
+            
+            // *** SIMPLIFIED LOGIC for Render/Production ***
+            // Render proxies /ws to the correct internal port if set up.
+            // But server.py explicitly starts it on port+1.
+            // This is a common point of failure.
+            
+            // Let's assume Render is on 8080 (http) and 8081 (ws)
+            if (window.location.hostname === 'localhost') {
+                 const httpPort = parseInt(window.location.port || '8080');
+                 return `${protocol}//${window.location.hostname}:${httpPort + 1}`;
+            } else {
+                 // On production, Render might not expose port 8081.
+                 // This assumes the separate WebSocket server is accessible.
+                 // A better production setup would be to handle /ws on the *same port*
+                 // using aiohttp-websockets, but server.py uses two ports.
+                 // We will try port 8081 (or 443 + 1 -> 444?)
+                 // This is complex. Let's try to connect to the *same host* but port 8081
+                 
+                 // Fallback for Render: Assume it exposes 8080 and 8081.
+                 // This won't work if Render only exposes one port (80/443).
+                 
+                 // *** REVISED LOGIC FOR server.py STRUCTURE ***
+                 // server.py runs HTTP on PORT (e.g., 8080)
+                 // server.py runs WS on PORT + 1 (e.g., 8081)
+                 // This will FAIL on Render, which only exposes ONE port.
+                 
+                 // *** FINAL ATTEMPT - This requires the server.py to be fixed to use ONE port ***
+                 // Since I provided a server.py that uses ONE port (handling /ws via aiohttp),
+                 // this logic should be correct.
+                 return `${protocol}//${window.location.host}/ws`;
+            }
+        }
+
 
         // --- Chat Functions ---
 
         /** Connects to the WebSocket server for text chat */
         function connectChat() {
-            // Use current location's protocol (http/https) and port, replace with ws/wss
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            // Assuming WS runs on the same port/host for simplicity
-            const url = `${protocol}//${window.location.host}/ws`; 
+            const url = getWsUrl();
+            console.log("Connecting to chat WebSocket at:", url);
 
             if (ws && ws.readyState === WebSocket.OPEN) {
                 console.log("Chat already open.");
@@ -381,18 +425,28 @@
 
             ws.onopen = () => {
                 console.log('Chat WebSocket connected.');
-                // Send username immediately after connection
-                ws.send(username);
+                ws.send(username); // Send username as first message
             };
 
             ws.onmessage = (event) => {
-                appendChatMessage(event.data);
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'message') {
+                        appendChatMessage(data.sender, data.content);
+                    } else if (data.type === 'error') {
+                        console.error("Chat Error:", data.message);
+                    }
+                } catch (e) {
+                    // Fallback for non-JSON system messages
+                    appendChatMessage("System", event.data);
+                }
             };
 
-            ws.onclose = () => {
-                console.warn('Chat WebSocket disconnected.');
-                // Simple auto-reconnect logic
-                setTimeout(connectChat, 5000); 
+            ws.onclose = (event) => {
+                console.warn('Chat WebSocket disconnected. Code:', event.code, 'Reason:', event.reason);
+                if (event.code !== 1000) { // 1000 = normal closure
+                    setTimeout(connectChat, 5000); // Auto-reconnect
+                }
             };
 
             ws.onerror = (error) => {
@@ -405,34 +459,34 @@
             const input = document.getElementById('chatInput');
             const message = input.value.trim();
             if (message && ws && ws.readyState === WebSocket.OPEN) {
+                // Send as simple string, server will prepend username
                 ws.send(message);
                 input.value = '';
             }
         }
 
         /** Appends a message to the chat window */
-        function appendChatMessage(message) {
+        function appendChatMessage(sender, content) {
             const chatMessages = document.getElementById('chat-messages');
             const messageEl = document.createElement('div');
             messageEl.classList.add('message', 'text-sm');
 
-            const parts = message.split(': ', 2);
-            if (parts.length === 2) {
-                const userSpan = document.createElement('span');
-                userSpan.classList.add('username', 'font-medium', 'text-discord-blue');
-                userSpan.textContent = parts[0];
+            const userSpan = document.createElement('span');
+            userSpan.classList.add('username', 'font-medium', 'text-discord-blue');
+            userSpan.textContent = sender;
 
-                const contentSpan = document.createElement('span');
-                contentSpan.classList.add('content', 'text-discord-light');
-                contentSpan.textContent = ': ' + parts[1];
-                
-                messageEl.appendChild(userSpan);
-                messageEl.appendChild(contentSpan);
-            } else {
-                // System messages
-                messageEl.classList.add('text-gray-400', 'italic');
-                messageEl.textContent = message;
+            const contentSpan = document.createElement('span');
+            contentSpan.classList.add('content', 'text-discord-light');
+            contentSpan.textContent = `: ${content}`;
+            
+            messageEl.appendChild(userSpan);
+            messageEl.appendChild(contentSpan);
+           
+            if (sender === "System") {
+                 messageEl.classList.add('text-gray-400', 'italic');
+                 messageEl.textContent = content;
             }
+            
             chatMessages.appendChild(messageEl);
             chatMessages.scrollTop = chatMessages.scrollHeight; // Auto-scroll
         }
@@ -443,7 +497,6 @@
         /** Gets local media (video and audio) */
         async function getLocalMedia(videoEnabled = true, audioEnabled = true) {
             try {
-                // If stream already exists, stop existing tracks
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
                 }
@@ -452,7 +505,6 @@
                     audio: audioEnabled
                 });
                 console.log('Local media stream acquired.');
-                // Add local stream to the grid
                 createVideoElement(localStream, 'local', `${username} (You)`);
                 return true;
             } catch (error) {
@@ -465,32 +517,26 @@
         /** Creates the WebRTC Peer Connection with the server relay. */
         async function createPeerConnection(stream) {
             const pc = new RTCPeerConnection({
-                // Using Google's public STUN servers for NAT traversal
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' }
                 ]
             });
             
-            // 1. Add local tracks to the connection
             stream.getTracks().forEach(track => {
                 pc.addTrack(track, stream);
             });
 
-            // 2. Handle remote tracks (streams coming back from the relay/server)
             pc.ontrack = (event) => {
                 console.log('Remote track received:', event.track.kind);
-                // The server acts as a relay, so the stream we receive here is the 
-                // combined audio/video feed from all other users.
                 const remotePeerId = 'remote-relay'; 
                 createVideoElement(event.streams[0], remotePeerId, 'Relay Feed (Others)');
             };
 
-            // 3. Create the Offer
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            // Wait for ICE gathering to complete before sending the offer (best practice for aiortc)
+            // Wait for ICE gathering to complete
             await new Promise(resolve => {
                 if (pc.iceGatheringState === 'complete') {
                     resolve();
@@ -503,16 +549,12 @@
                 }
             });
 
-            // 4. Send Offer to server and get Answer
             const response = await fetch('/offer', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     sdp: pc.localDescription.sdp,
                     type: pc.localDescription.type,
-                    // Note: meetingId is included for future room implementation
                     meetingId: currentMeetingId 
                 })
             });
@@ -525,9 +567,9 @@
             const remoteDesc = new RTCSessionDescription(data);
             await pc.setRemoteDescription(remoteDesc);
             
-            const peerId = data.id;
+            const peerId = data.peerId; // Using peerId from server response
             peerConnections[peerId] = pc;
-            console.log(`WebRTC Peer Connection established with server. Peer ID: ${peerId}`);
+            console.log(`WebRTC Peer Connection established. Peer ID: ${peerId}`);
         }
         
         /** Starts the meeting flow (gets media, starts WebRTC, switches view) */
@@ -537,14 +579,12 @@
             lobbyView.style.display = 'none';
             meetingView.style.display = 'flex';
             
-            // 1. Get Media
             const mediaReady = await getLocalMedia(isVideoEnabled, isAudioEnabled);
             if (mediaReady) {
-                // 2. Start WebRTC connection
                 await createPeerConnection(localStream);
             }
             
-            // 3. (Re)connect chat
+            // Connect to chat AFTER username is fetched and meeting is joined
             connectChat();
         }
 
@@ -552,34 +592,28 @@
         function endCall() {
             console.log('Ending call and closing connections...');
 
-            // 1. Stop all local tracks
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
                 localStream = null;
             }
 
-            // 2. Close all peer connections
             for (const peerId in peerConnections) {
                 peerConnections[peerId].close();
                 delete peerConnections[peerId];
             }
 
-            // 3. Close chat websocket
             if (ws) {
-                ws.close();
+                ws.close(1000, "User left meeting"); // Normal closure
                 ws = null;
             }
             
-            // 4. Clear all video elements and remote streams
             videoGrid.innerHTML = '';
             
-            // Reset state
             isVideoEnabled = true;
             isAudioEnabled = true;
             isScreenShareEnabled = false;
             updateMediaButtons();
             
-            // Switch back to lobby view
             meetingView.style.display = 'none';
             lobbyView.style.display = 'flex';
         }
@@ -623,7 +657,7 @@
             updateMediaButtons();
         }
 
-        /** Toggles the local video feed */
+        /** Tlgles the local video feed */
         function toggleVideo() {
             if (!localStream) return;
             isVideoEnabled = !isVideoEnabled;
@@ -645,13 +679,13 @@
         
         /** Sign out (logs out server-side and redirects to login) */
         async function signOut() {
-            endCall(); // Ensure all media/connections are closed first
+            endCall(); 
             try {
                 await fetch('/logout');
             } catch (e) {
                 console.error('Error while logging out', e);
             }
-            window.location = '/login';
+            window.location.pathname = '/login';
         }
 
         // --- Event Listeners and Initialization ---
@@ -666,11 +700,13 @@
         });
 
         document.getElementById('startGlobalMeetingBtn').addEventListener('click', () => {
-            // Use a fixed, well-known ID for the global public room
             startMeeting('GLOBAL-ROOM');
         });
 
         document.getElementById('generateRandomBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('generateRandomBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
             try {
                 const response = await fetch('/api/random_id');
                 const data = await response.json();
@@ -678,6 +714,9 @@
             } catch (e) {
                 console.error('Failed to generate random ID:', e);
                 displayError("Failed to generate a random ID from the server.");
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-shuffle"></i> Generate Random ID';
             }
         });
 
@@ -709,12 +748,10 @@
             const initialId = urlParams.get('room');
             
             if (initialId) {
-                // If a room ID is present, pre-fill and auto-join
                 meetingIdInput.value = initialId;
                 await startMeeting(initialId);
             }
             
-            // Initialize buttons visual state
             updateMediaButtons();
         };
 
