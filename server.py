@@ -96,7 +96,8 @@ async def init_db(app):
                 )
             """)
             await db.commit()
-        app['db'] = await aiosqlite.connect(DB_PATH)
+        # Use WAL mode for better concurrency
+        app['db'] = await aiosqlite.connect(f'file:{DB_PATH}?mode=rwc&journal_mode=WAL')
         logger.info("Database initialized and 'users' table ensured.")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
@@ -198,7 +199,7 @@ async def handle_register_page(request):
             return web.Response(text=f.read(), content_type="text/html")
     except FileNotFoundError:
         logger.error("register.html not found!")
-        return web.Response(text="Registration page not found.", status=404) # Fixed 44 to 404
+        return web.Response(text="Registration page not found.", status=404)
 
 async def handle_register(request):
     """Handles the POST request from the registration form."""
@@ -414,7 +415,8 @@ async def main():
             # Try to use the key from the environment
             key_from_env_bytes = secret_key_str.encode('utf-8')
             # This is the validation: try to initialize Fernet directly.
-            Fernet(key_from_env_bytes) # This will raise ValueError if invalid
+            # This will fail if the key is not 32-byte base64-encoded.
+            Fernet(key_from_env_bytes) 
             secret_key_bytes = key_from_env_bytes
             logger.info("Loaded valid SECRET_KEY from environment.")
         except (ValueError, TypeError) as e:
